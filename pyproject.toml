@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drive-qr-sign"
+version = "0.0.1"
+description = "Google Drive 上の PDF に、紙に刷った QR から PAdES 電子署名を付けるワークフロー"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Katsuaki Matsumoto" }]
+
+dependencies = [
+    # 署名コア
+    "pyhanko>=0.36",
+    "pyhanko-certvalidator>=0.31",
+    "requests>=2.31",
+    # 署名ページ（web層）
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "itsdangerous>=2.2",
+    # Google（OIDC・Drive）
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.140",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    # 書類生成側の検証用。アプリ本体は typst に依存しない
+    "typst>=0.13",
+    "cryptography>=42",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# ネットワークに出るテスト（TSA）は既定で除外する
+addopts = "-m 'not network'"
+markers = ["network: 外部サービス（TSA）に接続するテスト"]

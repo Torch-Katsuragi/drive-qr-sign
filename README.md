@@ -1,0 +1,91 @@
+# drive-qr-sign
+
+紙で回覧した書類の「押印」だけを電子署名に置き換える。書類は Google Drive に置いたまま動かさない。
+印刷した QR をスマホで読むと署名ページが開き、Google ログイン後ワンタップで PAdES 署名と
+タイムスタンプが PDF に埋まる。
+
+一行で言うと「LibreSign の Google Drive 版」。
+
+```
+書類PDFをDriveに配置 → QR付きで印刷して紙で回覧 → 読了後にQRをスマホで読む
+  → 署名ページ（Googleログイン）→ アプリがDrive APIでPDF取得 → 内容確認して署名（PAdES + TSA）
+```
+
+紙の回覧文化はそのまま残す。ペーパーレスを強制しない。
+証跡は PDF 自体に埋まるので、将来このアプリを廃止しても署名済み PDF 単体で検証できる。
+
+## 現状
+
+開発初期。動いているのは署名コアと、書類が署名欄を自己記述する仕組みまで。
+
+| | 状態 |
+|---|---|
+| PAdES 署名 + RFC 3161 タイムスタンプ | 動く |
+| Typst の押印枠 → 空署名フィールドの自動注入 | 動く |
+| 署名ページ（web）・Google ログイン | 未着手 |
+| Drive 連携 | 未着手 |
+| QR ペイロードの HMAC | 未着手 |
+
+設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)。
+
+## 仕組みのかなめ
+
+### PDF が署名欄を自己記述する
+
+署名欄の位置をアプリが持つと、書類の種類が増えるたびにアプリを直すことになる。
+そうならないよう、位置は書類側（Typst）に持たせる。
+
+```typst
+#let sig-anchor(role, w: 24mm, h: 24mm) = box(width: w, height: h, stroke: 0.5pt + gray)[
+  #context [
+    #let p = here().position()
+    #metadata((role: role, page: p.page, x: p.x.pt(), y: p.y.pt(), w: w.pt(), h: h.pt())) <sig-anchor>
+  ]
+]
+```
+
+役職はラベル名（`<sig-組合長>`）ではなく metadata の中身に入れる。
+ラベル名に埋めると、引く側が役職名を先に知っていないと `typst query` できないため。
+
+ビルド時に `typst query` で座標を取り、その位置へ pyHanko で空の署名フィールドを注入する。
+フィールド名はそのまま役職名になる。サイドカーファイルは不要で、Acrobat からも標準の署名欄として見える。
+
+アプリが持つのは「メールアドレス → 役職」の対応表だけ。アプリは書類の種類を知らない。
+
+### 署名者に Drive スコープを要求しない
+
+署名者の OAuth スコープは `openid` + `email` のみ。無料の Gmail アカウントでも、
+未審査アプリの警告画面を踏まずに署名できる。
+
+> [!IMPORTANT]
+> その代償として、Drive アクセス用の refresh token を導入組織の管理用アカウントから
+> 一つ預かる。完全なステートレスではなく、アクセス制御の根拠が
+> 「署名者本人の Drive ACL」から「アプリによる突合」に移る。
+> 導入前にこの点を理解すること。
+
+## 開発
+
+```powershell
+py -3.10 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pytest
+```
+
+サンプル書類をビルドして署名欄を注入する:
+
+```powershell
+.venv\Scripts\python.exe tools\build_sample.py
+```
+
+開発用の自己署名証明書を作って署名してみる:
+
+```powershell
+.venv\Scripts\python.exe tools\make_dev_cert.py secrets
+```
+
+`secrets/` と `out/` は `.gitignore` 済み。
+TSA に接続するテストは既定で除外してある（`pytest -m network` で実行）。
+
+## ライセンス
+
+Apache License 2.0（[LICENSE](LICENSE)）。
