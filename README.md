@@ -98,11 +98,8 @@ QR やリンクが指す原本にいつまでも署名が入らない。
 署名者の OAuth スコープは `openid` + `email` のみ。無料の Gmail アカウントでも、
 未審査アプリの警告画面を踏まずに署名できる。
 
-> [!IMPORTANT]
-> その代償として、Drive アクセス用の refresh token を導入組織の管理用アカウントから
-> 一つ預かる。完全なステートレスではなく、アクセス制御の根拠が
-> 「署名者本人の Drive ACL」から「アプリによる突合」に移る。
-> 導入前にこの点を理解すること。
+署名者が Drive の権限をアプリに渡さないので、アプリが署名者の代わりに Drive を触ることはない。
+アプリが持つのは自分のサービスアカウントだけで、そこに何が見えるかは組織の共有設定が決める。
 
 ## 開発
 
@@ -138,6 +135,27 @@ py -3.10 -m venv .venv
 
 同意画面のスコープは `openid` と `email` だけでよい。
 Google アカウントのアイコンを印影に使いたい場合のみ `profile` を足す。
+
+### Drive を繋ぐ
+
+`secrets/service-account.json` と `secrets/dev-drive.json` の両方があれば本物の Drive を使い、
+無ければローカルのディレクトリを倉庫にする。
+
+```powershell
+gcloud iam service-accounts create drive-qr-sign --project <PROJECT>
+gcloud iam service-accounts keys create secrets\service-account.json `
+  --iam-account drive-qr-sign@<PROJECT>.iam.gserviceaccount.com
+```
+
+そのうえで、署名させたい PDF を Drive でそのサービスアカウントに**編集者として共有**し、
+file id を `secrets/dev-drive.json` に書く。
+
+```json
+{ "file_id": "1jsEW..." }
+```
+
+本番（Cloud Run）では鍵ファイルを置かず、実行環境に紐づいたサービスアカウントをそのまま使う
+（`build_default_service()`）。鍵ファイルは開発用の逃げ道。
 
 `secrets/` と `out/` は `.gitignore` 済み。
 TSA に接続するテストは既定で除外してある（`pytest -m network` で実行）。
