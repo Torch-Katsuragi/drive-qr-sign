@@ -18,7 +18,7 @@ from pathlib import Path
 import uvicorn
 
 from drive_qr_sign.documents import LocalDocumentStore
-from drive_qr_sign.identity import RoleDirectory
+from drive_qr_sign.identity import SignerDirectory
 from drive_qr_sign.qr import sign_url
 from drive_qr_sign.signing import load_signer
 from drive_qr_sign.web import create_app
@@ -35,11 +35,13 @@ FILE_ID = "sample"
 # 開発用の固定鍵。本番は Secret Manager から読む
 DEV_QR_SECRET = b"dev-only-qr-secret"
 
-# メールアドレス → 役職。導入組織ごとに設定する唯一の業務知識
-DEV_ROLES = {
+# 署名者名簿。導入組織ごとに設定する唯一の業務知識。
+# 役職が None の人は押印枠を持たず、押すと不可視署名になる
+DEV_SIGNERS = {
     "kumiaicho@example.test": "組合長",
     "sanji@example.test": "参事",
     "tantou@example.test": "担当",
+    "kanji@example.test": None,
 }
 
 
@@ -88,7 +90,7 @@ def main() -> None:
     prepare()
     app = create_app(
         document_store=LocalDocumentStore(STORE_DIR),
-        role_directory=RoleDirectory(DEV_ROLES),
+        signer_directory=SignerDirectory(DEV_SIGNERS),
         identity_provider=DevIdentityProvider(),
         signer=load_signer(SECRETS_DIR / "dev-key.pem", SECRETS_DIR / "dev-cert.pem"),
         qr_secret=DEV_QR_SECRET,
@@ -98,8 +100,8 @@ def main() -> None:
 
     url = sign_url(f"http://{HOST}:{PORT}", DEV_QR_SECRET, FILE_ID)
     print("QR に焼く URL（開発用）:")
-    for email, role in DEV_ROLES.items():
-        print(f"  {role:<4} {url}&as={email}")
+    for email, role in DEV_SIGNERS.items():
+        print(f"  {(role or 'サイレント'):<6} {url}&as={email}")
 
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 

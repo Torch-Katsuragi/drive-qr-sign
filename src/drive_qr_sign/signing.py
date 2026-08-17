@@ -92,6 +92,35 @@ def load_signer(key_file: Path | str, cert_file: Path | str, *, key_passphrase: 
     )
 
 
+def _sign(
+    src: PdfSource,
+    dst: PdfSink,
+    *,
+    field_name: str,
+    signer,
+    tsa_url: str | None,
+    reason: str | None,
+    signer_name: str | None,
+    new_field_spec: "fields.SigFieldSpec | None",
+) -> None:
+    timestamper = timestamps.HTTPTimeStamper(tsa_url) if tsa_url else None
+    meta = signers.PdfSignatureMetadata(
+        field_name=field_name,
+        subfilter=fields.SigSeedSubFilter.PADES,
+        reason=reason,
+        name=signer_name,
+    )
+    pdf_signer = signers.PdfSigner(
+        meta, signer=signer, timestamper=timestamper, new_field_spec=new_field_spec
+    )
+
+    with _as_stream(src, "rb") as inf, _as_stream(dst, "wb") as outf:
+        writer = IncrementalPdfFileWriter(inf)
+        pdf_signer.sign_pdf(
+            writer, existing_fields_only=new_field_spec is None, output=outf
+        )
+
+
 def sign_field(
     src: PdfSource,
     dst: PdfSink,
@@ -104,18 +133,47 @@ def sign_field(
 ) -> None:
     """既存の空フィールドに PAdES 署名を埋める。
 
-    existing_fields_only=True にしてあるので、指定した名前の空フィールドが無ければ失敗する。
-    「アプリが勝手に署名欄を作って署名する」ことが起きないようにするための安全弁。
+    existing_fields_only=True になるので、指定した名前の空フィールドが無ければ失敗する。
+    「アプリが押印枠を勝手に作って署名する」ことが起きないようにするための安全弁。
     """
-    timestamper = timestamps.HTTPTimeStamper(tsa_url) if tsa_url else None
-    meta = signers.PdfSignatureMetadata(
+    _sign(
+        src,
+        dst,
         field_name=field_name,
-        subfilter=fields.SigSeedSubFilter.PADES,
+        signer=signer,
+        tsa_url=tsa_url,
         reason=reason,
-        name=signer_name,
+        signer_name=signer_name,
+        new_field_spec=None,
     )
-    pdf_signer = signers.PdfSigner(meta, signer=signer, timestamper=timestamper)
 
-    with _as_stream(src, "rb") as inf, _as_stream(dst, "wb") as outf:
-        writer = IncrementalPdfFileWriter(inf)
-        pdf_signer.sign_pdf(writer, existing_fields_only=True, output=outf)
+
+def sign_invisible(
+    src: PdfSource,
+    dst: PdfSink,
+    *,
+    field_name: str,
+    signer,
+    tsa_url: str | None = FREE_TSA_URL,
+    reason: str | None = None,
+    signer_name: str | None = None,
+) -> None:
+    """押印枠を持たない人の署名。フィールドをその場で作り、紙面には何も出さない。
+
+    box を渡さないので `/Rect [0 0 0 0]` の不可視フィールドになる。
+    署名の中身（証明書・タイムスタンプ・改ざん検知）は可視署名とまったく同じで、
+    違うのは appearance が無いことだけ。Acrobat の署名パネルには出る。
+
+    フィールド名は呼び出し側が `identity.silent_field_name()` で決める。
+    押印枠の名前空間（役職名）とは重ならない。
+    """
+    _sign(
+        src,
+        dst,
+        field_name=field_name,
+        signer=signer,
+        tsa_url=tsa_url,
+        reason=reason,
+        signer_name=signer_name,
+        new_field_spec=fields.SigFieldSpec(sig_field_name=field_name),
+    )

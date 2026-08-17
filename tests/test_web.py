@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drive_qr_sign.documents import LocalDocumentStore
-from drive_qr_sign.identity import RoleDirectory
+from drive_qr_sign.identity import SignerDirectory, silent_field_name
 from drive_qr_sign.qr import make_mac
 from drive_qr_sign.signing import list_signature_fields, load_signer
 from drive_qr_sign.web import create_app
@@ -42,7 +42,13 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
     store = LocalDocumentStore(store_dir)
     app = create_app(
         document_store=store,
-        role_directory=RoleDirectory({"Soumu@example.test": "担当", "kumiaicho@example.test": "組合長"}),
+        signer_directory=SignerDirectory(
+            {
+                "Soumu@example.test": "担当",
+                "kumiaicho@example.test": "組合長",
+                "kanji@example.test": None,  # 押印枠を持たない人
+            }
+        ),
         identity_provider=identity,
         signer=load_signer(key, cert),
         qr_secret=SECRET,
@@ -86,12 +92,75 @@ def test_signer_sees_their_own_field(env):
     assert "担当として署名する" in body
 
 
-def test_person_without_a_field_cannot_sign(env):
+def test_stranger_cannot_sign(env):
+    """名簿にいない人は押せない。名簿がこのアプリの唯一のアクセス制御。"""
     client, identity, _ = env
     identity.email = "yoso@example.test"
     body = client.get(_url()).text
     assert "<button" not in body
-    assert "割り当てられた署名欄が、この書類にはありません" in body
+    assert "署名者名簿にありません" in body
+
+
+def test_stranger_post_is_refused(env):
+    client, identity, store_dir = env
+    identity.email = "yoso@example.test"
+    # csrf は自分のメールで計算できてしまうので、名簿の判定が最後の砦になる
+    csrf = _extract_csrf_for(client, identity, "kanji@example.test")
+    identity.email = "yoso@example.test"
+
+    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    assert response.status_code == 403
+    assert not (store_dir / f"{FILE_ID}.signed.pdf").exists()
+
+
+def test_person_without_a_field_signs_invisibly(env):
+    """押印枠を持たない人はサイレント署名。押印枠は空のまま、紙面は変わらない。"""
+    client, identity, store_dir = env
+    identity.email = "kanji@example.test"
+
+    body = client.get(_url()).text
+    assert "確認したことを記録する" in body
+
+    csrf = _extract_csrf(body)
+    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert response.status_code == 200
+    signed = store_dir / f"{FILE_ID}.signed.pdf"
+    assert list_signature_fields(signed, filled=True) == [silent_field_name("kanji@example.test")]
+    # 押印枠には一切触れていない
+    assert list_signature_fields(signed, filled=False) == ["組合長", "参事", "担当"]
+
+
+def test_silent_signature_is_not_repeated(env):
+    client, identity, _ = env
+    identity.email = "kanji@example.test"
+    url = f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}"
+
+    csrf = _extract_csrf(client.get(_url()).text)
+    assert client.post(url, data={"csrf": csrf}).status_code == 200
+    assert "確認済み" in client.get(_url()).text
+    assert client.post(url, data={"csrf": csrf}).status_code == 409
+
+
+def test_silent_signature_keeps_the_page_unchanged(env, fields_pdf: Path):
+    """紙面が変わっていないことを、ページの描画結果そのもので確かめる。"""
+    pdfium = pytest.importorskip("pypdfium2")
+    client, identity, store_dir = env
+    identity.email = "kanji@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    def render(path) -> bytes:
+        doc = pdfium.PdfDocument(str(path))
+        doc.init_forms()
+        return doc[0].render(scale=1, draw_annots=True, may_draw_forms=True).to_pil().tobytes()
+
+    assert render(store_dir / f"{FILE_ID}.signed.pdf") == render(fields_pdf)
+
+
+def _extract_csrf_for(client, identity, email: str) -> str:
+    identity.email = email
+    return _extract_csrf(client.get(_url()).text)
 
 
 def test_signing_fills_only_that_field(env):
