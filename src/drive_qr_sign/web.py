@@ -138,6 +138,7 @@ def create_app(
                 tsa_url=tsa_url,
                 signer_name=email,
                 reason=f"{role}として承認",
+                seal=signer_directory.seal_for(email),
             )
         else:
             sign_invisible(

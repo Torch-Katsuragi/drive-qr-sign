@@ -18,7 +18,7 @@ from pathlib import Path
 import uvicorn
 
 from drive_qr_sign.documents import LocalDocumentStore
-from drive_qr_sign.identity import SignerDirectory
+from drive_qr_sign.identity import SignerDirectory, SignerEntry
 from drive_qr_sign.qr import sign_url
 from drive_qr_sign.signing import load_signer
 from drive_qr_sign.web import create_app
@@ -38,10 +38,10 @@ DEV_QR_SECRET = b"dev-only-qr-secret"
 # 署名者名簿。導入組織ごとに設定する唯一の業務知識。
 # 役職が None の人は押印枠を持たず、押すと不可視署名になる
 DEV_SIGNERS = {
-    "kumiaicho@example.test": "組合長",
-    "sanji@example.test": "参事",
-    "tantou@example.test": "担当",
-    "kanji@example.test": None,
+    "kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本"),
+    "sanji@example.test": SignerEntry(role="参事", seal_text="山田"),
+    "tantou@example.test": SignerEntry(role="担当", seal_text="佐々木"),
+    "kanji@example.test": None,  # 押印枠なし＝サイレント署名
 }
 
 
@@ -100,8 +100,9 @@ def main() -> None:
 
     url = sign_url(f"http://{HOST}:{PORT}", DEV_QR_SECRET, FILE_ID)
     print("QR に焼く URL（開発用）:")
-    for email, role in DEV_SIGNERS.items():
-        print(f"  {(role or 'サイレント'):<6} {url}&as={email}")
+    for email, entry in DEV_SIGNERS.items():
+        label = entry.role if entry else "サイレント"
+        print(f"  {label:<6} {url}&as={email}")
 
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 

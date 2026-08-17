@@ -22,6 +22,8 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 
@@ -34,24 +36,58 @@ class IdentityProvider(Protocol):
         """ログイン済みなら検証済みメールアドレス、未ログインなら None。"""
 
 
-class SignerDirectory:
-    """署名者名簿。値が None の人は役職を持たない（サイレント署名のみ）。"""
+@dataclass(frozen=True)
+class SignerEntry:
+    """名簿の1行。
 
-    def __init__(self, mapping: dict[str, str | None]):
+    role が None の人は押印枠を持たず、押すとサイレント署名になる。
+    seal_text は印影に彫る文字（通常は姓）。seal_image を置けば生成せずその画像を使う。
+    """
+
+    role: str | None = None
+    seal_text: str | None = None
+    seal_image: Path | str | None = None
+
+
+class SignerDirectory:
+    """署名者名簿。役職だけを書きたいときは文字列、押印枠を持たない人は None でよい。"""
+
+    def __init__(self, mapping: dict[str, SignerEntry | str | None]):
         # メールアドレスの大文字小文字は本人性の判定に使わない
-        self._by_email = {email.strip().lower(): role for email, role in mapping.items()}
+        self._by_email = {
+            email.strip().lower(): _as_entry(value) for email, value in mapping.items()
+        }
 
     def knows(self, email: str) -> bool:
         return email.strip().lower() in self._by_email
 
-    def role_for(self, email: str) -> str | None:
+    def entry_for(self, email: str) -> SignerEntry | None:
         return self._by_email.get(email.strip().lower())
 
+    def role_for(self, email: str) -> str | None:
+        entry = self.entry_for(email)
+        return entry.role if entry else None
+
+    def seal_for(self, email: str):
+        """その人の印影。名簿に印影の指定が無ければ None（＝押印枠には何も描かない）。"""
+        from .seal import seal_for
+
+        entry = self.entry_for(email)
+        if entry is None:
+            return None
+        return seal_for(entry.seal_text, entry.seal_image)
+
     def emails_for(self, role: str) -> list[str]:
-        return [email for email, r in self._by_email.items() if r == role]
+        return [email for email, entry in self._by_email.items() if entry.role == role]
 
     def __len__(self) -> int:
         return len(self._by_email)
+
+
+def _as_entry(value: SignerEntry | str | None) -> SignerEntry:
+    if isinstance(value, SignerEntry):
+        return value
+    return SignerEntry(role=value)
 
 
 # サイレント署名のフィールド名は専用の名前空間に閉じる。

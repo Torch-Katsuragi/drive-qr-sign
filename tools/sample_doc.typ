@@ -19,7 +19,8 @@
       h: h.pt(),
     )) <sig-anchor>
   ]
-  #place(bottom + center, dy: -1mm, text(size: 6pt, fill: gray, role))
+  // 枠の外に役職名を置く。枠の中は印影のためにまるごと空けておく
+  #place(bottom + center, dy: 4.5mm, text(size: 7pt, fill: gray, role))
 ]
 
 #align(center, text(size: 16pt, weight: "bold")[支出調書（サンプル）])

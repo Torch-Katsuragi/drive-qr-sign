@@ -92,6 +92,30 @@ def load_signer(key_file: Path | str, cert_file: Path | str, *, key_passphrase: 
     )
 
 
+def _seal_style(seal):
+    """印影だけを描くスタンプ。文字も枠も出さない。
+
+    pyHanko の既定スタンプは「Digitally signed by ...」という英文と人型のアートを描く。
+    紙面を従来と同じ見た目に保つのが設計の柱なので、印影以外は出さない。
+    """
+    if seal is None:
+        return None
+    from pyhanko import stamp
+    from pyhanko.pdf_utils.images import PdfImage
+    from pyhanko.pdf_utils.layout import AxisAlignment, InnerScaling, SimpleBoxLayoutRule
+
+    return stamp.StaticStampStyle(
+        background=PdfImage(seal),
+        border_width=0,
+        # 押印枠の中央に、枠いっぱいまで。既定は左上寄せの原寸なので枠と印影がずれる
+        background_layout=SimpleBoxLayoutRule(
+            x_align=AxisAlignment.ALIGN_MID,
+            y_align=AxisAlignment.ALIGN_MID,
+            inner_content_scaling=InnerScaling.STRETCH_TO_FIT,
+        ),
+    )
+
+
 def _sign(
     src: PdfSource,
     dst: PdfSink,
@@ -102,6 +126,7 @@ def _sign(
     reason: str | None,
     signer_name: str | None,
     new_field_spec: "fields.SigFieldSpec | None",
+    seal=None,
 ) -> None:
     timestamper = timestamps.HTTPTimeStamper(tsa_url) if tsa_url else None
     meta = signers.PdfSignatureMetadata(
@@ -111,7 +136,11 @@ def _sign(
         name=signer_name,
     )
     pdf_signer = signers.PdfSigner(
-        meta, signer=signer, timestamper=timestamper, new_field_spec=new_field_spec
+        meta,
+        signer=signer,
+        timestamper=timestamper,
+        new_field_spec=new_field_spec,
+        stamp_style=_seal_style(seal),
     )
 
     with _as_stream(src, "rb") as inf, _as_stream(dst, "wb") as outf:
@@ -130,11 +159,15 @@ def sign_field(
     tsa_url: str | None = FREE_TSA_URL,
     reason: str | None = None,
     signer_name: str | None = None,
+    seal=None,
 ) -> None:
     """既存の空フィールドに PAdES 署名を埋める。
 
     existing_fields_only=True になるので、指定した名前の空フィールドが無ければ失敗する。
     「アプリが押印枠を勝手に作って署名する」ことが起きないようにするための安全弁。
+
+    seal に PIL 画像を渡すと、押印枠にその印影を描く。渡さなければ pyHanko の既定の
+    見た目になる（英文と人型のアート）ので、実運用では必ず渡す。
     """
     _sign(
         src,
@@ -145,6 +178,7 @@ def sign_field(
         reason=reason,
         signer_name=signer_name,
         new_field_spec=None,
+        seal=seal,
     )
 
 

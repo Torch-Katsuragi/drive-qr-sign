@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from drive_qr_sign.documents import LocalDocumentStore
-from drive_qr_sign.identity import SignerDirectory, silent_field_name
+from drive_qr_sign.identity import SignerDirectory, SignerEntry, silent_field_name
 from drive_qr_sign.qr import make_mac
 from drive_qr_sign.signing import list_signature_fields, load_signer
 from drive_qr_sign.web import create_app
@@ -44,8 +44,8 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
         document_store=store,
         signer_directory=SignerDirectory(
             {
-                "Soumu@example.test": "担当",
-                "kumiaicho@example.test": "組合長",
+                "Soumu@example.test": SignerEntry(role="担当", seal_text="佐々木"),
+                "kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本"),
                 "kanji@example.test": None,  # 押印枠を持たない人
             }
         ),
@@ -140,6 +140,36 @@ def test_silent_signature_is_not_repeated(env):
     assert client.post(url, data={"csrf": csrf}).status_code == 200
     assert "確認済み" in client.get(_url()).text
     assert client.post(url, data={"csrf": csrf}).status_code == 409
+
+
+def test_seal_lands_in_the_box(env, fields_pdf: Path):
+    """押印枠に朱色の印影が乗ること。pyHanko 既定の紫のアートが出ていないことも見る。"""
+    pdfium = pytest.importorskip("pypdfium2")
+    client, identity, store_dir = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    def render(path):
+        doc = pdfium.PdfDocument(str(path))
+        doc.init_forms()
+        return doc[0].render(scale=2, draw_annots=True, may_draw_forms=True).to_pil().convert("RGB")
+
+    before = render(fields_pdf)
+    after = render(store_dir / f"{FILE_ID}.signed.pdf")
+    # 組合長の枠（PDF座標 311.8-379.8pt, 上端 105.3pt から）を scale=2 の画素に直した範囲
+    box = (int(311.8 * 2), int(105.3 * 2), int(379.9 * 2), int(173.4 * 2))
+    changed = [
+        after.getpixel((x, y))
+        for x in range(box[0], box[2])
+        for y in range(box[1], box[3])
+        if after.getpixel((x, y)) != before.getpixel((x, y))
+    ]
+    assert changed, "押印枠の中身が変わっていない"
+    assert any(r > g + 60 and r > b + 60 for r, g, b in changed), "朱色の芯が無い"
+    # pyHanko 既定の紫のアートが出ていれば、青が赤を上回る画素が混ざる
+    # （朱色のアンチエイリアスは白に寄るだけなので、赤が青を下回ることはない）
+    assert all(r >= b for r, g, b in changed)
 
 
 def test_silent_signature_keeps_the_page_unchanged(env, fields_pdf: Path):
