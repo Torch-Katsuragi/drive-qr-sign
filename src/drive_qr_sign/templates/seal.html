@@ -2,43 +2,51 @@
 {% block title %}印影の設定{% endblock %}
 {% block content %}
 <h1>印影の設定</h1>
-<p class="who">{{ email }}</p>
+<p class="doc">{{ email }}</p>
 
-<p class="preview"><img src="/seal/preview.png" alt="いまの印影" width="160" height="160"></p>
-<p class="note">
-  {% if registered %}
-    登録した画像を使っています。
-  {% else %}
-    画像を登録していないので、名前から作った丸印を使っています。
-  {% endif %}
-</p>
+<div class="cols">
+  <section>
+    <p>
+      {% if registered %}
+        登録した画像を印影に使っています。
+      {% else %}
+        画像を登録していないので、名前から作った丸印を使っています。
+      {% endif %}
+    </p>
 
-{% if can_register %}
-  <h2>画像を使う</h2>
-  <form method="post" action="/seal" enctype="multipart/form-data">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="file" name="image" accept="image/*" required>
-    <button type="submit">この画像を印影にする</button>
-  </form>
-  <p class="note">
-    正方形に切り抜いて使います。透過していない画像（写真やアイコン）は丸く切り抜くので、
-    押印枠が塗りつぶされることはありません。
-  </p>
+    {% if can_register %}
+      <h2>画像を使う</h2>
+      <form method="post" action="/seal" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="file" name="image" accept="image/*" required>
+        <button type="submit">この画像を印影にする</button>
+      </form>
+      <p class="note">
+        正方形に切り抜いて使います。透過していない画像（写真やアイコン）は丸く切り抜くので、
+        押印枠が塗りつぶされることはありません。
+      </p>
 
-  {% if google_picture %}
-    <h2>Google アカウントのアイコンを使う</h2>
-    <form method="post" action="/seal/google">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit">アイコンを取り込む</button>
-    </form>
-  {% endif %}
+      {% if google_picture %}
+        <h2>Google アカウントのアイコンを使う</h2>
+        <form method="post" action="/seal/google">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit">アイコンを取り込む</button>
+        </form>
+      {% endif %}
 
-  {% if registered %}
-    <h2>登録をやめる</h2>
-    <form method="post" action="/seal/delete">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="quiet">生成した丸印に戻す</button>
-    </form>
-  {% endif %}
-{% endif %}
+      {% if registered %}
+        <h2>登録をやめる</h2>
+        <form method="post" action="/seal/delete">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="quiet">生成した丸印に戻す</button>
+        </form>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  <aside class="action">
+    <img class="seal" src="/seal/preview.png" alt="いまの印影">
+    <p class="note">いま押される印影</p>
+  </aside>
+</div>
 {% endblock %}

@@ -224,7 +224,7 @@ def test_deleting_the_registration_falls_back_to_generation(env):
     identity.email = "kumiaicho@example.test"
     csrf = _extract_csrf(client.get("/seal").text)
     client.post("/seal", data={"csrf": csrf}, files={"image": ("me.png", _blue_png(), "image/png")})
-    assert "登録した画像を使っています" in client.get("/seal").text
+    assert "登録した画像を印影に使っています" in client.get("/seal").text
 
     client.post("/seal/delete", data={"csrf": csrf})
     assert "名前から作った丸印" in client.get("/seal").text

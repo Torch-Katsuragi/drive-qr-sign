@@ -182,6 +182,27 @@ def test_tampered_session_cookie_is_ignored():
     assert probe.get("/whoami").json() == {"email": None}
 
 
+def test_id_token_verification_tolerates_clock_skew(monkeypatch):
+    """端末の時計が数秒ずれているだけでログインできない、を防ぐ。
+
+    実機で踏んだ: 1秒遅れているPCで「Token used too early」になった。
+    """
+    from google.oauth2 import id_token as google_id_token
+
+    from drive_qr_sign import google_identity
+
+    captured = {}
+
+    def fake_verify(token, request, audience, **kwargs):
+        captured.update(kwargs)
+        return {"email": "a@example.test", "email_verified": True}
+
+    monkeypatch.setattr(google_id_token, "verify_oauth2_token", fake_verify)
+    google_identity._verify_id_token("token", "client-id")
+
+    assert captured.get("clock_skew_in_seconds", 0) >= 5
+
+
 def test_client_secrets_are_read_from_the_console_json(tmp_path):
     path = tmp_path / "client.json"
     path.write_text(

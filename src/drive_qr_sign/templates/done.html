@@ -1,17 +1,25 @@
 {% extends "base.html" %}
-{% block title %}署名しました{% endblock %}
+{% block title %}{% if mode == "role_ready" %}署名しました{% else %}記録しました{% endif %}{% endblock %}
 {% block content %}
-{% if mode == "role_ready" %}
-  <h1>署名しました</h1>
-  <p class="doc">{{ file_id }}</p>
-  <p class="role">{{ role }}</p>
-  <p class="who">{{ email }}</p>
-  <p>印影が入り、署名とタイムスタンプが PDF 自体に埋まりました。Adobe Acrobat の署名パネルで検証できます。</p>
-{% else %}
-  <h1>記録しました</h1>
-  <p class="doc">{{ file_id }}</p>
-  <p class="who">{{ email }}</p>
-  <p>紙面に出ない署名として記録しました。書類の見た目は変わりません。</p>
-{% endif %}
-<p class="note">書き戻し先: {{ stored_as }}</p>
+<h1>{% if mode == "role_ready" %}署名しました{% else %}記録しました{% endif %}</h1>
+<p class="doc">{{ file_id }}</p>
+
+<div class="cols">
+  <section>
+    <p class="who">{{ email }}</p>
+    {% if mode == "role_ready" %}
+      <p class="role">{{ role }}</p>
+      <p>印影が入り、署名とタイムスタンプが PDF 自体に埋まりました。Adobe Acrobat の署名パネルで検証できます。</p>
+    {% else %}
+      <p>紙面に出ない署名として記録しました。書類の見た目は変わりません。</p>
+    {% endif %}
+    <p class="note">書き戻し先: {{ stored_as }}</p>
+  </section>
+
+  {% if mode == "role_ready" %}
+    <aside class="action">
+      <img class="seal" src="/seal/preview.png" alt="押した印影">
+    </aside>
+  {% endif %}
+</div>
 {% endblock %}

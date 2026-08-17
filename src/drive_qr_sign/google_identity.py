@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import secrets as secrets_module
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
+
+logger = logging.getLogger(__name__)
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -76,11 +79,21 @@ def _exchange_code(
     return response.json()
 
 
+# 許容する時計のずれ。0 だと、端末の時計が1秒遅れているだけで
+# 「Token used too early」でログインできない（実機で踏んだ）
+CLOCK_SKEW_SECONDS = 30
+
+
 def _verify_id_token(token: str, client_id: str) -> dict:
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token as google_id_token
 
-    return google_id_token.verify_oauth2_token(token, google_requests.Request(), client_id)
+    return google_id_token.verify_oauth2_token(
+        token,
+        google_requests.Request(),
+        client_id,
+        clock_skew_in_seconds=CLOCK_SKEW_SECONDS,
+    )
 
 
 class GoogleIdentityProvider:
@@ -177,13 +190,18 @@ class GoogleIdentityProvider:
             except BadSignature:
                 raise HTTPException(status_code=403, detail="ログインをやり直してください")
 
-            tokens = self._exchange_code(
-                code=code,
-                code_verifier=flow["verifier"],
-                redirect_uri=self.redirect_uri,
-                client=self.client,
-            )
-            claims = self._verify_id_token(tokens["id_token"], self.client.client_id)
+            try:
+                tokens = self._exchange_code(
+                    code=code,
+                    code_verifier=flow["verifier"],
+                    redirect_uri=self.redirect_uri,
+                    client=self.client,
+                )
+                claims = self._verify_id_token(tokens["id_token"], self.client.client_id)
+            except Exception:
+                # 失敗の中身は署名者に見せない。原因はログに残す
+                logger.exception("トークンの取得・検証に失敗した")
+                raise HTTPException(status_code=403, detail="ログインをやり直してください")
 
             if claims.get("nonce") != flow["nonce"]:
                 raise HTTPException(status_code=403, detail="ログインをやり直してください")

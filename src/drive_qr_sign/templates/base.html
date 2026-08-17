@@ -5,33 +5,102 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}署名{% endblock %} | drive-qr-sign</title>
 <style>
-  :root { color-scheme: light dark; }
+  /*
+    スマホ（QR から来た人）と PC（Drive のリンクから開いた人）の両方が主用途。
+    1カラムを細く伸ばすのではなく、幅があるときは「説明」と「押す場所」を左右に分ける。
+  */
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f4f6;
+    --card: #ffffff;
+    --ink: #1b1b1f;
+    --muted: #66666e;
+    --line: #e2e2e7;
+    --seal: #c7112c;
+    --accent: #1a4fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --card: #1f1f24;
+      --ink: #ececf0;
+      --muted: #a0a0aa;
+      --line: #33333c;
+      --accent: #7aa2ff;
+    }
+  }
+
   * { box-sizing: border-box; }
   html { overflow-x: hidden; }
   body {
+    margin: 0;
+    min-height: 100dvh;
+    padding: clamp(0rem, 4vw, 3rem) clamp(0rem, 3vw, 2rem);
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    background: var(--bg);
+    color: var(--ink);
     font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
-    /* rem で上限を切ると、文字サイズを大きくしている端末で画面幅を超える */
-    margin: 0 auto; padding: 1.5rem 1.25rem; max-width: min(32rem, 100%); line-height: 1.7;
+    line-height: 1.7;
     overflow-wrap: anywhere;
   }
-  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
-  .doc { font-size: .85rem; opacity: .7; word-break: break-all; }
-  .role { font-size: 1.5rem; font-weight: 600; margin: .25rem 0; }
-  .who { font-size: .9rem; opacity: .75; }
-  button {
-    width: 100%; padding: 1rem; font-size: 1.1rem; font-weight: 600;
-    border: 0; border-radius: .5rem; margin-top: 1.5rem; cursor: pointer;
+
+  .card {
+    width: 100%;
+    /* rem だけで上限を切ると、文字を大きくしている端末で画面幅を超える */
+    max-width: min(48rem, 100%);
+    background: var(--card);
+    padding: clamp(1.25rem, 4vw, 2.75rem);
+    border: 1px solid var(--line);
+    border-radius: clamp(0px, 2vw, 1rem);
   }
-  .note { font-size: .85rem; opacity: .75; margin-top: 1.5rem; }
-  ul { padding-left: 1.2rem; }
+
+  h1 { font-size: clamp(1.15rem, 1rem + 1vw, 1.5rem); margin: 0 0 .25rem; }
   h2 { font-size: 1rem; margin: 2rem 0 .5rem; }
-  .preview { text-align: center; margin: 1.5rem 0 .5rem; }
-  .preview img { width: min(160px, 45%); height: auto; }
-  button.quiet { font-weight: 400; font-size: .95rem; padding: .7rem; }
-  input[type=file] { width: 100%; font-size: .95rem; }
+  p { margin: .6rem 0; }
+  a { color: var(--accent); }
+
+  .doc {
+    font-size: .8rem; color: var(--muted);
+    padding-bottom: 1.25rem; margin: 0; border-bottom: 1px solid var(--line);
+  }
+  .who { font-size: .9rem; color: var(--muted); margin-top: 1.25rem; }
+  .role { font-size: clamp(1.5rem, 1.2rem + 2vw, 2.25rem); font-weight: 600; margin: 0 0 .5rem; }
+  .note { font-size: .85rem; color: var(--muted); }
+
+  /* 幅があるときだけ2カラム。押す場所を右に固めて、視線の行き先を1つにする */
+  .cols { display: grid; gap: clamp(1.25rem, 3vw, 2.5rem); align-items: start; }
+  @media (min-width: 34rem) {
+    .cols { grid-template-columns: minmax(0, 1fr) 15rem; }
+    .action { position: sticky; top: 1rem; }
+  }
+
+  .action { display: grid; gap: .75rem; justify-items: center; text-align: center; }
+  .action .note { margin: 0; }
+
+  .seal {
+    width: min(11rem, 60vw); height: auto; aspect-ratio: 1;
+    object-fit: contain;
+    padding: .5rem; border: 1px dashed var(--line); border-radius: .75rem;
+  }
+
+  button {
+    width: 100%; padding: 1rem 1.25rem;
+    font: inherit; font-weight: 600;
+    color: #fff; background: var(--seal);
+    border: 0; border-radius: .6rem; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; }
+
+  input[type=file] { width: 100%; font: inherit; font-size: .9rem; }
+  form { width: 100%; display: grid; gap: .75rem; }
 </style>
 </head>
 <body>
+<main class="card">
 {% block content %}{% endblock %}
+</main>
 </body>
 </html>

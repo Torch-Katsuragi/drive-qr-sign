@@ -33,7 +33,10 @@ OUT_DIR = REPO_ROOT / "out"
 STORE_DIR = OUT_DIR / "dev-store"
 SECRETS_DIR = REPO_ROOT / "secrets"
 
-HOST = "127.0.0.1"
+HOST = "127.0.0.1"  # 待ち受けはループバックだけ
+# 表に出す名前は localhost に揃える。OAuth のリダイレクト URI は文字列一致で照合されるので、
+# 127.0.0.1 と localhost を混ぜると redirect_uri_mismatch になる
+PUBLIC_ORIGIN = "http://localhost:8765"
 PORT = 8765
 FILE_ID = "sample"
 
@@ -53,6 +56,23 @@ DEV_SIGNERS = {
     "tantou@example.test": SignerEntry(role="担当", seal_text="佐々木"),
     "kanji@example.test": None,  # 押印枠なし＝サイレント署名
 }
+
+# 実在のアカウントで試すとき用。secrets/ は .gitignore 済みなので、
+# 個人のメールアドレスがリポジトリに入らない。
+#   {"someone@example.com": {"role": "組合長", "seal_text": "松本"}, "other@example.com": null}
+SIGNERS_OVERRIDE = Path(__file__).resolve().parent.parent / "secrets" / "dev-signers.json"
+
+
+def load_signers() -> dict:
+    if not SIGNERS_OVERRIDE.exists():
+        return DEV_SIGNERS
+    import json
+
+    raw = json.loads(SIGNERS_OVERRIDE.read_text(encoding="utf-8"))
+    return {
+        email: (SignerEntry(**value) if isinstance(value, dict) else value)
+        for email, value in raw.items()
+    }
 
 
 DEV_COOKIE = "dev_as"
@@ -106,7 +126,7 @@ def build_identity_provider():
     return (
         GoogleIdentityProvider(
             ClientSecrets.load(CLIENT_SECRETS),
-            redirect_uri=f"http://{HOST}:{PORT}/oauth2/callback",
+            redirect_uri=f"{PUBLIC_ORIGIN}/oauth2/callback",
             session_secret=DEV_SESSION_SECRET,
             cookie_secure=False,  # localhost は http なので secure だと Cookie が付かない
         ),
@@ -116,10 +136,11 @@ def build_identity_provider():
 
 def main() -> None:
     prepare()
+    signers = load_signers()
     identity_provider, is_fake = build_identity_provider()
     app = create_app(
         document_store=LocalDocumentStore(STORE_DIR),
-        signer_directory=SignerDirectory(DEV_SIGNERS),
+        signer_directory=SignerDirectory(signers),
         identity_provider=identity_provider,
         signer=load_signer(SECRETS_DIR / "dev-key.pem", SECRETS_DIR / "dev-cert.pem"),
         qr_secret=DEV_QR_SECRET,
@@ -129,16 +150,16 @@ def main() -> None:
     if is_fake:
         app.middleware("http")(remember_dev_identity)
 
-    url = sign_url(f"http://{HOST}:{PORT}", DEV_QR_SECRET, FILE_ID)
+    url = sign_url(PUBLIC_ORIGIN, DEV_QR_SECRET, FILE_ID)
     print("QR に焼く URL（開発用）:")
     if is_fake:
-        for email, entry in DEV_SIGNERS.items():
+        for email, entry in signers.items():
             label = entry.role if entry else "サイレント"
             print(f"  {label:<6} {url}&as={email}")
     else:
         print(f"  {url}")
         print("  ログインするアカウントは、下の名簿に載っているものにする:")
-        for email, entry in DEV_SIGNERS.items():
+        for email, entry in signers.items():
             print(f"    {(entry.role if entry else 'サイレント'):<6} {email}")
 
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

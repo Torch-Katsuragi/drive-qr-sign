@@ -3,52 +3,64 @@
 <h1>書類への署名</h1>
 <p class="doc">{{ file_id }}</p>
 
-{% if mode == "login" %}
-  <p>署名するには Google アカウントでログインしてください。</p>
-  {% if can_log_in %}
-    <form method="get" action="/login">
-      <input type="hidden" name="next" value="/s/{{ file_id }}?m={{ mac }}">
-      <button type="submit">Google でログイン</button>
-    </form>
-  {% endif %}
-  <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
+<div class="cols">
+  <section>
+    {% if mode == "login" %}
+      <p class="who">未ログイン</p>
+      <p>署名するには Google アカウントでログインしてください。</p>
+      <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
 
-{% else %}
-  <p class="who">{{ email }}</p>
+    {% else %}
+      <p class="who">{{ email }}</p>
 
-  {% if mode == "role_ready" %}
-    <p class="role">{{ role }}</p>
-    <p>この欄に署名します。押すと印影が入り、タイムスタンプ付きの電子署名が PDF に埋まります。</p>
-    <p class="preview"><img src="/seal/preview.png" alt="押される印影" width="110" height="110"></p>
-    <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit">{{ role }}として署名する</button>
-    </form>
-    <p class="note"><a href="/seal">印影を変える</a></p>
+      {% if mode == "role_ready" %}
+        <p class="role">{{ role }}</p>
+        <p>この欄に署名します。押すと印影が入り、タイムスタンプ付きの電子署名が PDF に埋まります。</p>
 
-  {% elif mode == "role_done" %}
-    <p class="role">{{ role }}</p>
-    <p>この書類の {{ role }} 欄は署名済みです。</p>
+      {% elif mode == "role_done" %}
+        <p class="role">{{ role }}</p>
+        <p>この書類の {{ role }} 欄は署名済みです。</p>
 
-  {% elif mode == "silent_ready" %}
-    <p>あなたに割り当てられた押印枠はありません。確認した記録として、紙面に出ない署名を残せます。</p>
-    <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit">確認したことを記録する</button>
-    </form>
-    <p class="note">印影は入りません。書類の見た目は変わらないまま、署名パネルに記録が残ります。</p>
+      {% elif mode == "silent_ready" %}
+        <p>あなたに割り当てられた押印枠はありません。確認した記録として、紙面に出ない署名を残せます。</p>
+        <p class="note">印影は入りません。書類の見た目は変わらないまま、署名パネルに記録が残ります。</p>
 
-  {% elif mode == "silent_done" %}
-    <p>この書類は確認済みとして記録されています。</p>
+      {% elif mode == "silent_done" %}
+        <p>この書類は確認済みとして記録されています。</p>
 
-  {% else %}
-    <p>このアカウントは、この書類の署名者名簿にありません。</p>
-  {% endif %}
-{% endif %}
+      {% else %}
+        <p>このアカウントは、この書類の署名者名簿にありません。</p>
+      {% endif %}
+    {% endif %}
 
-{% if empty_fields %}
-  <p class="note">未署名の押印枠: {{ empty_fields | join("、") }}</p>
-{% else %}
-  <p class="note">押印枠はすべて埋まっています。</p>
-{% endif %}
+    {% if empty_fields %}
+      <p class="note">未署名の押印枠: {{ empty_fields | join("、") }}</p>
+    {% else %}
+      <p class="note">押印枠はすべて埋まっています。</p>
+    {% endif %}
+  </section>
+
+  <aside class="action">
+    {% if mode == "login" and can_log_in %}
+      <form method="get" action="/login">
+        <input type="hidden" name="next" value="/s/{{ file_id }}?m={{ mac }}">
+        <button type="submit">Google でログイン</button>
+      </form>
+
+    {% elif mode == "role_ready" %}
+      <img class="seal" src="/seal/preview.png" alt="押される印影">
+      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">{{ role }}として署名する</button>
+      </form>
+      <p class="note"><a href="/seal">印影を変える</a></p>
+
+    {% elif mode == "silent_ready" %}
+      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit">確認したことを記録する</button>
+      </form>
+    {% endif %}
+  </aside>
+</div>
 {% endblock %}
