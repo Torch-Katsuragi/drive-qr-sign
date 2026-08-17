@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import io
+
+from PIL import Image
+
 from drive_qr_sign.documents import LocalDocumentStore
+from drive_qr_sign.seal_store import LocalSealStore
 from drive_qr_sign.identity import SignerDirectory, SignerEntry, silent_field_name
 from drive_qr_sign.qr import make_mac
 from drive_qr_sign.signing import list_signature_fields, load_signer
@@ -53,6 +58,7 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
         signer=load_signer(key, cert),
         qr_secret=SECRET,
         tsa_url=None,  # テストはネットワークに出ない
+        seal_store=LocalSealStore(tmp_path / "seals"),
     )
     return TestClient(app), identity, store_dir
 
@@ -170,6 +176,58 @@ def test_seal_lands_in_the_box(env, fields_pdf: Path):
     # pyHanko 既定の紫のアートが出ていれば、青が赤を上回る画素が混ざる
     # （朱色のアンチエイリアスは白に寄るだけなので、赤が青を下回ることはない）
     assert all(r >= b for r, g, b in changed)
+
+
+def _blue_png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGBA", (200, 200), (20, 90, 220, 255)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_registered_image_is_used_instead_of_the_generated_seal(env):
+    """本人が登録した画像が、生成した丸印より優先されること。"""
+    pdfium = pytest.importorskip("pypdfium2")
+    client, identity, store_dir = env
+    identity.email = "kumiaicho@example.test"
+
+    seal_csrf = _extract_csrf(client.get("/seal").text)
+    assert client.post("/seal", data={"csrf": seal_csrf}, files={"image": ("me.png", _blue_png(), "image/png")}).status_code == 200
+
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    doc = pdfium.PdfDocument(str(store_dir / f"{FILE_ID}.signed.pdf"))
+    doc.init_forms()
+    page = doc[0].render(scale=2, draw_annots=True, may_draw_forms=True).to_pil().convert("RGB")
+    r, g, b = page.getpixel((int(345 * 2), int(139 * 2)))  # 組合長の枠の中心
+    assert b > r + 60, "登録した画像ではなく生成した丸印が押されている"
+
+
+def test_seal_upload_requires_login(env):
+    client, _, _ = env
+    assert client.get("/seal").status_code == 401
+    assert client.post("/seal", data={"csrf": "x"}, files={"image": ("me.png", _blue_png(), "image/png")}).status_code == 401
+
+
+def test_seal_upload_rejects_garbage(env):
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get("/seal").text)
+    response = client.post(
+        "/seal", data={"csrf": csrf}, files={"image": ("x.png", b"not an image", "image/png")}
+    )
+    assert response.status_code == 400
+
+
+def test_deleting_the_registration_falls_back_to_generation(env):
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get("/seal").text)
+    client.post("/seal", data={"csrf": csrf}, files={"image": ("me.png", _blue_png(), "image/png")})
+    assert "登録した画像を使っています" in client.get("/seal").text
+
+    client.post("/seal/delete", data={"csrf": csrf})
+    assert "名前から作った丸印" in client.get("/seal").text
 
 
 def test_silent_signature_keeps_the_page_unchanged(env, fields_pdf: Path):

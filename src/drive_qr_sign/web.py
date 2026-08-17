@@ -17,13 +17,15 @@ import hmac
 import io
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .qr import InvalidPayload, verify_mac
+from .seal import MAX_UPLOAD_BYTES, UnusableImage
+from .seal_store import SealStore
 from .signing import FREE_TSA_URL, list_signature_fields, sign_field, sign_invisible
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -57,8 +59,33 @@ def create_app(
     signer,
     qr_secret: bytes,
     tsa_url: str | None = FREE_TSA_URL,
+    seal_store: SealStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
+
+    def _seal_for(email: str):
+        """印影をどこから取るか。
+
+        1. 本人が登録した画像（アップロード、または Google のアイコン）
+        2. 名簿に組織が指定した画像
+        3. 名簿の文字から生成（無ければ役職から生成）
+
+        生成はいちばん後ろ。本人が用意した絵があるなら、そちらが本人らしい。
+        """
+        if seal_store is not None:
+            own = seal_store.get(email)
+            if own is not None:
+                return own
+        return signer_directory.seal_for(email)
+
+    def _google_picture(request: Request) -> str | None:
+        """ログインしている Google アカウントのアイコン URL。
+
+        取れるかどうかは IdentityProvider 次第（OIDC の picture クレームは
+        profile スコープが要る）。取れない実装なら、この導線は画面に出ない。
+        """
+        source = getattr(identity_provider, "picture_url", None)
+        return source(request) if source else None
 
     def _load(file_id: str, mac: str) -> bytes:
         try:
@@ -138,7 +165,7 @@ def create_app(
                 tsa_url=tsa_url,
                 signer_name=email,
                 reason=f"{role}として承認",
-                seal=signer_directory.seal_for(email),
+                seal=_seal_for(email),
             )
         else:
             sign_invisible(
@@ -164,4 +191,95 @@ def create_app(
             },
         )
 
+    # --- 印影の登録 ---------------------------------------------------------
+    # 押印枠に何を出すかは本人が選べる。生成した丸印はあくまで、何も用意しなかった人向け。
+
+    def _require_signer(request: Request) -> str:
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        return email
+
+    def _check_seal_csrf(email: str, csrf: str) -> None:
+        if not hmac.compare_digest(_csrf_token(qr_secret, "seal", email), csrf):
+            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+        if seal_store is None:
+            raise HTTPException(status_code=404, detail="印影の登録は使えません")
+
+    @app.get("/seal", response_class=HTMLResponse)
+    def seal_page(request: Request) -> HTMLResponse:
+        email = _require_signer(request)
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="seal.html",
+            context={
+                "email": email,
+                "can_register": seal_store is not None,
+                "registered": seal_store is not None and seal_store.get(email) is not None,
+                "google_picture": _google_picture(request),
+                "csrf": _csrf_token(qr_secret, "seal", email),
+            },
+        )
+
+    @app.get("/seal/preview.png")
+    def seal_preview(request: Request) -> Response:
+        """いま押されることになる印影。登録・生成のどちらであっても同じ絵が出る。"""
+        email = _require_signer(request)
+        seal = _seal_for(email)
+        if seal is None:
+            raise HTTPException(status_code=404, detail="印影がありません")
+        buffer = io.BytesIO()
+        seal.save(buffer, format="PNG")
+        return Response(buffer.getvalue(), media_type="image/png")
+
+    @app.post("/seal")
+    async def upload_seal(
+        request: Request, csrf: str = Form(""), image: UploadFile = File(...)
+    ) -> RedirectResponse:
+        email = _require_signer(request)
+        _check_seal_csrf(email, csrf)
+        try:
+            seal_store.put(email, await image.read())
+        except UnusableImage as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return RedirectResponse("/seal", status_code=303)
+
+    @app.post("/seal/google")
+    def use_google_picture(request: Request, csrf: str = Form("")) -> RedirectResponse:
+        email = _require_signer(request)
+        _check_seal_csrf(email, csrf)
+        url = _google_picture(request)
+        if not url:
+            raise HTTPException(status_code=400, detail="アイコンを取得できません")
+        seal_store.put(email, _fetch_picture(url))
+        return RedirectResponse("/seal", status_code=303)
+
+    @app.post("/seal/delete")
+    def delete_seal(request: Request, csrf: str = Form("")) -> RedirectResponse:
+        email = _require_signer(request)
+        _check_seal_csrf(email, csrf)
+        seal_store.delete(email)
+        return RedirectResponse("/seal", status_code=303)
+
     return app
+
+
+def _fetch_picture(url: str) -> bytes:
+    """Google アカウントのアイコンを取ってくる。
+
+    URL は ID トークン由来だが、アプリからの外向き通信になるので行き先を絞る。
+    ここを緩めると、細工したトークンでアプリに任意の URL を叩かせられる。
+    """
+    from urllib.parse import urlparse
+
+    import requests
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or not parsed.hostname.endswith(
+        ".googleusercontent.com"
+    ):
+        raise HTTPException(status_code=400, detail="アイコンの取得先が不正です")
+
+    response = requests.get(url, timeout=5, stream=True)
+    response.raise_for_status()
+    return response.raw.read(MAX_UPLOAD_BYTES + 1, decode_content=True)

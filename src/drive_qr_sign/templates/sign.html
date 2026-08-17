@@ -13,10 +13,12 @@
   {% if mode == "role_ready" %}
     <p class="role">{{ role }}</p>
     <p>この欄に署名します。押すと印影が入り、タイムスタンプ付きの電子署名が PDF に埋まります。</p>
+    <p class="preview"><img src="/seal/preview.png" alt="押される印影" width="110" height="110"></p>
     <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button type="submit">{{ role }}として署名する</button>
     </form>
+    <p class="note"><a href="/seal">印影を変える</a></p>
 
   {% elif mode == "role_done" %}
     <p class="role">{{ role }}</p>

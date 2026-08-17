@@ -128,7 +128,54 @@ def _stretched_glyph(char: str, font_path: Path, width: int, height: int) -> Ima
 def seal_for(seal_text: str | None, seal_image: Path | str | None = None) -> Image.Image | None:
     """名簿の1行から印影を作る。画像が指定されていればそちらを優先する。"""
     if seal_image:
-        return Image.open(seal_image).convert("RGBA")
+        return prepare_uploaded(Path(seal_image).read_bytes())
     if seal_text:
         return render_seal(seal_text)
     return None
+
+
+# 受け取る画像の上限。押印枠に収まる絵でしかないので、大きい必要がない
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024
+
+
+class UnusableImage(Exception):
+    pass
+
+
+def prepare_uploaded(data: bytes, size: int = 512) -> Image.Image:
+    """人が持ち込んだ画像を印影として使える形に整える。
+
+    受け取ったバイト列をそのまま PDF に流さず、必ず開いて描き直す。
+    素性の分からない画像を PDF に埋め込むことになるので、ここが実質の検疫になる
+    （EXIF や余計なチャンクは再エンコードで落ちる）。
+
+    - 正方形に中央切り抜きしてから縮小する。押印枠は正方形なので、比率を崩すと絵が歪む
+    - 透過を持たない画像（Google アカウントのアイコンや写真）は円形に切り抜く。
+      四角いまま貼ると枠が塗りつぶされ、紙面の見た目が変わってしまう
+    - 元から透過を持つ画像（印影として作られた PNG など）はそのまま。勝手に丸く切らない
+    """
+    import io
+
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise UnusableImage("画像が大きすぎます")
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception as exc:  # PIL は画像形式ごとに別の例外を投げる
+        raise UnusableImage("画像として読めません") from exc
+
+    from PIL import ImageOps
+
+    image = ImageOps.exif_transpose(image).convert("RGBA")
+    has_alpha = image.getchannel("A").getextrema()[0] < 250
+
+    side = min(image.size)
+    left = (image.width - side) // 2
+    top = (image.height - side) // 2
+    image = image.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
+
+    if not has_alpha:
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+        image.putalpha(mask)
+    return image

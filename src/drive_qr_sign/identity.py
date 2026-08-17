@@ -69,13 +69,17 @@ class SignerDirectory:
         return entry.role if entry else None
 
     def seal_for(self, email: str):
-        """その人の印影。名簿に印影の指定が無ければ None（＝押印枠には何も描かない）。"""
+        """名簿から引ける印影。
+
+        彫る文字が書かれていなければ役職で作る。押印枠が空のまま署名されるより、
+        役職印が押してあるほうが紙として自然なため。
+        """
         from .seal import seal_for
 
         entry = self.entry_for(email)
         if entry is None:
             return None
-        return seal_for(entry.seal_text, entry.seal_image)
+        return seal_for(entry.seal_text or entry.role, entry.seal_image)
 
     def emails_for(self, role: str) -> list[str]:
         return [email for email, entry in self._by_email.items() if entry.role == role]

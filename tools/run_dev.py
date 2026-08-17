@@ -20,6 +20,7 @@ import uvicorn
 from drive_qr_sign.documents import LocalDocumentStore
 from drive_qr_sign.identity import SignerDirectory, SignerEntry
 from drive_qr_sign.qr import sign_url
+from drive_qr_sign.seal_store import LocalSealStore
 from drive_qr_sign.signing import load_signer
 from drive_qr_sign.web import create_app
 
@@ -95,6 +96,7 @@ def main() -> None:
         signer=load_signer(SECRETS_DIR / "dev-key.pem", SECRETS_DIR / "dev-cert.pem"),
         qr_secret=DEV_QR_SECRET,
         tsa_url=None,  # 開発中は TSA に出ない。本番は freeTSA か認定TSA
+        seal_store=LocalSealStore(OUT_DIR / "dev-seals"),
     )
     app.middleware("http")(remember_dev_identity)
 
