@@ -99,18 +99,21 @@ def test_signer_sees_their_own_field(env):
 
 
 def test_stranger_cannot_sign(env):
-    """名簿にいない人は押せない。名簿がこのアプリの唯一のアクセス制御。"""
+    """見る権限が無い人は押せない。
+
+    本番ではこの判定が Drive の共有設定になる（開発用の既定は名簿で代用）。
+    """
     client, identity, _ = env
     identity.email = "yoso@example.test"
     body = client.get(_url()).text
     assert "<button" not in body
-    assert "署名者名簿にありません" in body
+    assert "この書類を見る権限がありません" in body
 
 
 def test_stranger_post_is_refused(env):
     client, identity, store_dir = env
     identity.email = "yoso@example.test"
-    # csrf は自分のメールで計算できてしまうので、名簿の判定が最後の砦になる
+    # csrf は自分のメールで計算できてしまうので、閲覧権の判定が最後の砦になる
     csrf = _extract_csrf_for(client, identity, "kanji@example.test")
     identity.email = "yoso@example.test"
 

@@ -3,11 +3,14 @@
 QR から来た人が見る唯一の画面。やることは3つしかない。
 
 1. QR の URL が本物か（HMAC）
-2. 押しているのが誰か（OpenID の検証済みメール）と、その人が名簿にいるか
+2. 押しているのが誰か（OpenID の検証済みメール）と、その人がこの書類を見られるか
 3. 押されたら署名して書き戻す。押印枠を持つ人は枠に印影、持たない人は不可視署名
 
-Google ログインと Drive はまだ差し込まれていない。どちらも Protocol 越しに受け取るので、
-本物が来てもこのファイルは変わらない。
+判定の出どころは2つに分かれている。**見られるか**は Drive の共有設定、
+**押印枠に押せるか**は名簿の役職。前者はアクセス制御、後者は決裁の割り当てで、
+守っているものが違うため一緒にしない。
+
+Drive も身元確認も Protocol 越しに受け取るので、実装が差し替わってもこのファイルは変わらない。
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
 MODE_LOGIN = "login"  # 未ログイン
-MODE_STRANGER = "stranger"  # 名簿にいない
+MODE_STRANGER = "stranger"  # この書類を見る権限が無い
 MODE_ROLE_READY = "role_ready"  # 押印枠が空いている
 MODE_ROLE_DONE = "role_done"  # 自分の枠は署名済み
 MODE_SILENT_READY = "silent_ready"  # 枠は無い。不可視署名を付けられる
@@ -62,8 +65,15 @@ def create_app(
     qr_secret: bytes,
     tsa_url: str | None = FREE_TSA_URL,
     seal_store: SealStore | None = None,
+    can_read=None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
+
+    # 「この人はこの書類を見てよいか」の判定。本番は Drive の共有設定に従う
+    # （DriveDocumentStore.can_read）。渡されなければ名簿で代用する——
+    # Drive の無い開発用サーバのための逃げ道で、本番の姿ではない
+    _can_read = can_read or (lambda file_id, email: signer_directory.knows(email))
+
     # pdf.js とビューアの読み込み口。外部 CDN は使わない
     # （導入先がネットワークを絞っていても動くこと、依存先が消えないことを優先する）
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -109,12 +119,18 @@ def create_app(
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail="書類が見つかりません")
 
-    def _situation(pdf: bytes, email: str | None) -> tuple[str, str | None, list[str]]:
-        """誰が何をできる状態かを1か所で判定する。GET も POST もここだけを見る。"""
+    def _situation(
+        pdf: bytes, email: str | None, file_id: str
+    ) -> tuple[str, str | None, list[str]]:
+        """誰が何をできる状態かを1か所で判定する。GET も POST もここだけを見る。
+
+        見られるかどうかは Drive の共有設定、押印枠に押せるかは名簿の役職。
+        判定の出どころが2つに分かれているのは、それぞれ守っているものが違うため。
+        """
         empty_fields = list_signature_fields(io.BytesIO(pdf), filled=False)
         if not email:
             return MODE_LOGIN, None, empty_fields
-        if not signer_directory.knows(email):
+        if not _can_read(file_id, email):
             return MODE_STRANGER, None, empty_fields
 
         role = signer_directory.role_for(email)
@@ -122,7 +138,8 @@ def create_app(
             mode = MODE_ROLE_READY if role in empty_fields else MODE_ROLE_DONE
             return mode, role, empty_fields
 
-        # 押印枠を持たない人。同じ名前のフィールドは2度作れないので、それが二重署名の判定になる
+        # 押印枠を持たない人。書類を見られる人なら確認の記録は残せる。
+        # 同じ名前のフィールドは2度作れないので、それが二重署名の判定になる
         already = silent_field_name(email) in list_signature_fields(io.BytesIO(pdf))
         return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
 
@@ -130,13 +147,13 @@ def create_app(
         """書類の中身を見せてよい相手にだけ PDF を返す。
 
         QR は紙に刷られて回覧されるので、URL を知っていることは何の資格でもない。
-        中身を見せる条件は署名と同じ「名簿にいること」にする。
+        見せてよいかは Drive の共有設定に従う（アプリの名簿では決めない）。
         """
         pdf = _load(file_id, mac)
         email = identity_provider.verified_email(request)
         if not email:
             raise HTTPException(status_code=401, detail="ログインが必要です")
-        if not signer_directory.knows(email):
+        if not _can_read(file_id, email):
             raise HTTPException(status_code=403, detail="この書類を見られるアカウントではありません")
         return pdf
 
@@ -158,7 +175,7 @@ def create_app(
     def sign_page(request: Request, file_id: str, m: str = "") -> HTMLResponse:
         pdf = _load(file_id, m)
         email = identity_provider.verified_email(request)
-        mode, role, empty_fields = _situation(pdf, email)
+        mode, role, empty_fields = _situation(pdf, email, file_id)
 
         return TEMPLATES.TemplateResponse(
             request=request,
@@ -173,7 +190,7 @@ def create_app(
                 "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
                 # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
                 "can_log_in": login_routes is not None,
-                # 中身を見せてよい相手か。未ログイン・名簿外にはビューアごと出さない
+                # 中身を見せてよい相手か。未ログイン・共有されていない人にはビューアごと出さない
                 "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
             },
         )
@@ -188,7 +205,7 @@ def create_app(
         if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
             raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-        mode, role, _ = _situation(pdf, email)
+        mode, role, _ = _situation(pdf, email, file_id)
         if mode == MODE_STRANGER:
             raise HTTPException(status_code=403, detail="この書類に署名できるアカウントではありません")
         if mode not in SIGNABLE:

@@ -1,6 +1,10 @@
 """開発用サーバ。
 
-Drive はまだ無く、ローカルのディレクトリを倉庫代わりに使う。
+置き場も身元確認も、secrets/ に何が置かれているかで本物と偽物が切り替わる。
+本物を差すのに必要なのはファイルを置くことだけで、コードは触らない。
+
+  secrets/service-account.json + dev-drive.json … 本物の Drive
+  secrets/oauth-client.json                     … 本物の Google ログイン
 
 本人確認は2通りで、`secrets/oauth-client.json`（Google Cloud コンソールの
 「JSON をダウンロード」で落ちるファイル）があれば本物の Google ログインになり、
@@ -21,6 +25,7 @@ from pathlib import Path
 import uvicorn
 
 from drive_qr_sign.documents import LocalDocumentStore
+from drive_qr_sign.drive import DriveDocumentStore, build_service
 from drive_qr_sign.google_identity import ClientSecrets, GoogleIdentityProvider
 from drive_qr_sign.identity import SignerDirectory, SignerEntry
 from drive_qr_sign.qr import sign_url
@@ -62,6 +67,12 @@ DEV_SIGNERS = {
 #   {"someone@example.com": {"role": "組合長", "seal_text": "松本"}, "other@example.com": null}
 SIGNERS_OVERRIDE = Path(__file__).resolve().parent.parent / "secrets" / "dev-signers.json"
 
+# Drive を使うための2つ。両方あれば本物の Drive、無ければローカルのディレクトリ。
+#   service-account.json … gcloud で作ったサービスアカウントの鍵
+#   dev-drive.json       … {"file_id": "<Driveのファイル id>"}
+SERVICE_ACCOUNT = Path(__file__).resolve().parent.parent / "secrets" / "service-account.json"
+DRIVE_CONFIG = Path(__file__).resolve().parent.parent / "secrets" / "dev-drive.json"
+
 
 def load_signers() -> dict:
     if not SIGNERS_OVERRIDE.exists():
@@ -99,8 +110,16 @@ async def remember_dev_identity(request, call_next):
     return response
 
 
+def ensure_dev_cert() -> None:
+    """開発用の自己署名証明書。無ければ作る。"""
+    if not (SECRETS_DIR / "dev-key.pem").exists():
+        from make_dev_cert import make_dev_cert
+
+        make_dev_cert(SECRETS_DIR)
+
+
 def prepare() -> None:
-    """サンプル書類と開発用証明書を用意する。"""
+    """ローカルを倉庫にするときのサンプル書類を用意する。"""
     STORE_DIR.mkdir(parents=True, exist_ok=True)
 
     fields_pdf = OUT_DIR / "sample-fields.pdf"
@@ -109,11 +128,6 @@ def prepare() -> None:
     shutil.copyfile(fields_pdf, STORE_DIR / f"{FILE_ID}.pdf")
     # 前回の実行で押した署名は持ち越さない（毎回まっさらな回覧から始める）
     (STORE_DIR / f"{FILE_ID}.signed.pdf").unlink(missing_ok=True)
-
-    if not (SECRETS_DIR / "dev-key.pem").exists():
-        from make_dev_cert import make_dev_cert
-
-        make_dev_cert(SECRETS_DIR)
 
 
 def build_identity_provider():
@@ -134,23 +148,44 @@ def build_identity_provider():
     )
 
 
+def build_document_store():
+    """Drive が設定されていればそちら、無ければローカルのディレクトリ。
+
+    戻り値は (store, file_id, can_read)。can_read が None のときは
+    create_app が名簿で代用する（Drive が無いので共有設定を読めない）。
+    """
+    import json
+
+    if not (SERVICE_ACCOUNT.exists() and DRIVE_CONFIG.exists()):
+        print(f"! {DRIVE_CONFIG.name} が無いのでローカルのディレクトリを倉庫にする")
+        prepare()
+        return LocalDocumentStore(STORE_DIR), FILE_ID, None
+
+    file_id = json.loads(DRIVE_CONFIG.read_text(encoding="utf-8"))["file_id"]
+    store = DriveDocumentStore(build_service(SERVICE_ACCOUNT))
+    print(f"Drive を使う（{SERVICE_ACCOUNT.name} / file_id={file_id}）")
+    return store, file_id, store.can_read
+
+
 def main() -> None:
-    prepare()
+    ensure_dev_cert()
     signers = load_signers()
+    document_store, file_id, can_read = build_document_store()
     identity_provider, is_fake = build_identity_provider()
     app = create_app(
-        document_store=LocalDocumentStore(STORE_DIR),
+        document_store=document_store,
         signer_directory=SignerDirectory(signers),
         identity_provider=identity_provider,
         signer=load_signer(SECRETS_DIR / "dev-key.pem", SECRETS_DIR / "dev-cert.pem"),
         qr_secret=DEV_QR_SECRET,
         tsa_url=None,  # 開発中は TSA に出ない。本番は freeTSA か認定TSA
         seal_store=LocalSealStore(OUT_DIR / "dev-seals"),
+        can_read=can_read,
     )
     if is_fake:
         app.middleware("http")(remember_dev_identity)
 
-    url = sign_url(PUBLIC_ORIGIN, DEV_QR_SECRET, FILE_ID)
+    url = sign_url(PUBLIC_ORIGIN, DEV_QR_SECRET, file_id)
     print("QR に焼く URL（開発用）:")
     if is_fake:
         for email, entry in signers.items():
