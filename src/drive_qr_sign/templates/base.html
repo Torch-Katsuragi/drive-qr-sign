@@ -6,9 +6,13 @@
 <title>{% block title %}署名{% endblock %} | drive-qr-sign</title>
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html { overflow-x: hidden; }
   body {
     font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
-    margin: 0 auto; padding: 1.5rem 1.25rem; max-width: 32rem; line-height: 1.7;
+    /* rem で上限を切ると、文字サイズを大きくしている端末で画面幅を超える */
+    margin: 0 auto; padding: 1.5rem 1.25rem; max-width: min(32rem, 100%); line-height: 1.7;
+    overflow-wrap: anywhere;
   }
   h1 { font-size: 1.25rem; margin: 0 0 1rem; }
   .doc { font-size: .85rem; opacity: .7; word-break: break-all; }
@@ -22,7 +26,7 @@
   ul { padding-left: 1.2rem; }
   h2 { font-size: 1rem; margin: 2rem 0 .5rem; }
   .preview { text-align: center; margin: 1.5rem 0 .5rem; }
-  .preview img { max-width: 40vw; height: auto; }
+  .preview img { width: min(160px, 45%); height: auto; }
   button.quiet { font-weight: 400; font-size: .95rem; padding: .7rem; }
   input[type=file] { width: 100%; font-size: .95rem; }
 </style>
