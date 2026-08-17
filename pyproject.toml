@@ -15,6 +15,8 @@ dependencies = [
     "pyhanko>=0.36",
     "pyhanko-certvalidator>=0.31",
     "requests>=2.31",
+    # 署名ページに書類の中身を出すため（PDF→ページ画像）
+    "pypdfium2>=4",
     # 署名ページ（web層）
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -31,7 +33,6 @@ dependencies = [
 dev = [
     "pytest>=8",
     "httpx>=0.27",  # fastapi.testclient が使う
-    "pypdfium2>=4",  # 紙面が変わっていないことを描画結果で確かめる
     # 書類生成側の検証用。アプリ本体は typst に依存しない
     "typst>=0.13",
     "cryptography>=42",

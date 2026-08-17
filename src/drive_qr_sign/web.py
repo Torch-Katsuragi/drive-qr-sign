@@ -24,6 +24,7 @@ from fastapi.templating import Jinja2Templates
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .qr import InvalidPayload, verify_mac
+from .render import page_count, render_page
 from .seal import MAX_UPLOAD_BYTES, UnusableImage
 from .seal_store import SealStore
 from .signing import FREE_TSA_URL, list_signature_fields, sign_field, sign_invisible
@@ -121,9 +122,43 @@ def create_app(
         already = silent_field_name(email) in list_signature_fields(io.BytesIO(pdf))
         return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
 
+    def _reader(request: Request, file_id: str, mac: str) -> bytes:
+        """書類の中身を見せてよい相手にだけ PDF を返す。
+
+        QR は紙に刷られて回覧されるので、URL を知っていることは何の資格でもない。
+        中身を見せる条件は署名と同じ「名簿にいること」にする。
+        """
+        pdf = _load(file_id, mac)
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        if not signer_directory.knows(email):
+            raise HTTPException(status_code=403, detail="この書類を見られるアカウントではありません")
+        return pdf
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/s/{file_id}/page/{index}.png")
+    def document_page(request: Request, file_id: str, index: int, m: str = "") -> Response:
+        pdf = _reader(request, file_id, m)
+        try:
+            image = render_page(pdf, index)
+        except IndexError:
+            raise HTTPException(status_code=404, detail="そのページはありません")
+        # 署名が入ると同じ URL で中身が変わる。キャッシュさせない
+        return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/s/{file_id}/document.pdf")
+    def document_file(request: Request, file_id: str, m: str = "") -> Response:
+        """PDF そのもの。手元のビューアで開きたい人向け。"""
+        pdf = _reader(request, file_id, m)
+        return Response(
+            pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "inline", "Cache-Control": "no-store"},
+        )
 
     @app.get("/s/{file_id}", response_class=HTMLResponse)
     def sign_page(request: Request, file_id: str, m: str = "") -> HTMLResponse:
@@ -144,6 +179,8 @@ def create_app(
                 "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
                 # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
                 "can_log_in": login_routes is not None,
+                # 中身を見せるのは名簿にいる人だけ。未ログインの人には枚数も出さない
+                "pages": page_count(pdf) if mode != MODE_LOGIN and mode != MODE_STRANGER else 0,
             },
         )
 

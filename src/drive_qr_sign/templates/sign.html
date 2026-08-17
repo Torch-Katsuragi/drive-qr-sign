@@ -63,4 +63,15 @@
     {% endif %}
   </aside>
 </div>
+
+{% if pages %}
+  <section class="document">
+    <h2>書類の中身</h2>
+    {% for page in range(pages) %}
+      <img class="page" src="/s/{{ file_id }}/page/{{ page }}.png?m={{ mac }}"
+           alt="{{ page + 1 }}ページ目" loading="lazy">
+    {% endfor %}
+    <p class="note"><a href="/s/{{ file_id }}/document.pdf?m={{ mac }}" target="_blank" rel="noopener">PDF を開く</a></p>
+  </section>
+{% endif %}
 {% endblock %}

@@ -178,6 +178,63 @@ def test_seal_lands_in_the_box(env, fields_pdf: Path):
     assert all(r >= b for r, g, b in changed)
 
 
+def test_document_pages_are_shown_to_signers(env):
+    """押す前に中身が読めること。紙の代わりになる最低条件。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+
+    body = client.get(_url()).text
+    assert f"/s/{FILE_ID}/page/0.png" in body
+
+    page = client.get(f"/s/{FILE_ID}/page/0.png?m={make_mac(SECRET, FILE_ID)}")
+    assert page.status_code == 200
+    assert page.headers["content-type"] == "image/png"
+    assert page.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_document_is_not_shown_without_login(env):
+    """QR は紙に刷られて出回る。URL を知っているだけでは中身を見せない。"""
+    client, _, _ = env
+    assert client.get(f"/s/{FILE_ID}/page/0.png?m={make_mac(SECRET, FILE_ID)}").status_code == 401
+    assert client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}").status_code == 401
+    assert "/page/0.png" not in client.get(_url()).text
+
+
+def test_document_is_not_shown_to_strangers(env):
+    client, identity, _ = env
+    identity.email = "yoso@example.test"
+    assert client.get(f"/s/{FILE_ID}/page/0.png?m={make_mac(SECRET, FILE_ID)}").status_code == 403
+    assert "/page/0.png" not in client.get(_url()).text
+
+
+def test_missing_page_is_404(env):
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    assert client.get(f"/s/{FILE_ID}/page/9.png?m={make_mac(SECRET, FILE_ID)}").status_code == 404
+
+
+def test_raw_pdf_is_served_to_signers(env):
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    response = client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}")
+    assert response.status_code == 200
+    assert response.content[:5] == b"%PDF-"
+
+
+def test_page_image_reflects_the_signature(env):
+    """署名後のページ画像に印影が出ること（古い画像を返し続けない）。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    url = f"/s/{FILE_ID}/page/0.png?m={make_mac(SECRET, FILE_ID)}"
+
+    before = client.get(url).content
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    after = client.get(url).content
+
+    assert before != after
+
+
 def _blue_png() -> bytes:
     buffer = io.BytesIO()
     Image.new("RGBA", (200, 200), (20, 90, 220, 255)).save(buffer, format="PNG")
