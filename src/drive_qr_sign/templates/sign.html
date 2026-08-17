@@ -64,14 +64,14 @@
   </aside>
 </div>
 
-{% if pages %}
+{% if can_read %}
   <section class="document">
     <h2>書類の中身</h2>
-    {% for page in range(pages) %}
-      <img class="page" src="/s/{{ file_id }}/page/{{ page }}.png?m={{ mac }}"
-           alt="{{ page + 1 }}ページ目" loading="lazy">
-    {% endfor %}
+    <div id="document"
+         data-src="/s/{{ file_id }}/document.pdf?m={{ mac }}"
+         data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
     <p class="note"><a href="/s/{{ file_id }}/document.pdf?m={{ mac }}" target="_blank" rel="noopener">PDF を開く</a></p>
   </section>
+  <script type="module" src="/static/viewer.js"></script>
 {% endif %}
 {% endblock %}

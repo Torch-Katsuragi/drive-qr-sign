@@ -98,11 +98,25 @@
 
   /* 書類の中身。押す前に読めることが紙の代わりの最低条件 */
   .document { margin-top: 2.5rem; border-top: 1px solid var(--line); }
+  #document { margin-top: 1rem; }
   .page {
-    display: block; width: 100%; height: auto; margin: 1rem 0;
-    border: 1px solid var(--line); border-radius: .25rem;
-    background: #fff;  /* 透過PDFでも紙に見えるように */
+    position: relative; display: block; width: 100%; margin: 1rem 0;
+    border: 1px solid var(--line); border-radius: .25rem; overflow: hidden;
+    background: #fff;  /* 描き終わるまでの間も紙に見えるように */
   }
+  .page canvas { display: block; }
+
+  /* pdf.js が文字を透明で重ねる層。選択とコピーができるのはこれのおかげ */
+  .textLayer {
+    position: absolute; inset: 0; overflow: hidden;
+    line-height: 1; text-size-adjust: none; forced-color-adjust: none;
+    transform-origin: 0 0; opacity: 1;
+  }
+  .textLayer span, .textLayer br {
+    position: absolute; white-space: pre; cursor: text;
+    color: transparent; transform-origin: 0 0;
+  }
+  .textLayer ::selection { background: rgba(0, 100, 255, .3); }
   form { width: 100%; display: grid; gap: .75rem; }
 </style>
 </head>

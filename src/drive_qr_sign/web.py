@@ -19,17 +19,18 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .qr import InvalidPayload, verify_mac
-from .render import page_count, render_page
 from .seal import MAX_UPLOAD_BYTES, UnusableImage
 from .seal_store import SealStore
 from .signing import FREE_TSA_URL, list_signature_fields, sign_field, sign_invisible
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+STATIC_DIR = Path(__file__).parent / "static"
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
 MODE_LOGIN = "login"  # 未ログイン
@@ -63,6 +64,9 @@ def create_app(
     seal_store: SealStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
+    # pdf.js とビューアの読み込み口。外部 CDN は使わない
+    # （導入先がネットワークを絞っていても動くこと、依存先が消えないことを優先する）
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # ログイン経路を持つ IdentityProvider（Google OIDC など）はここで生える。
     # 偽の身元確認を差した開発用サーバでは router が無いので、何も生えない
@@ -140,16 +144,6 @@ def create_app(
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/s/{file_id}/page/{index}.png")
-    def document_page(request: Request, file_id: str, index: int, m: str = "") -> Response:
-        pdf = _reader(request, file_id, m)
-        try:
-            image = render_page(pdf, index)
-        except IndexError:
-            raise HTTPException(status_code=404, detail="そのページはありません")
-        # 署名が入ると同じ URL で中身が変わる。キャッシュさせない
-        return Response(image, media_type="image/png", headers={"Cache-Control": "no-store"})
-
     @app.get("/s/{file_id}/document.pdf")
     def document_file(request: Request, file_id: str, m: str = "") -> Response:
         """PDF そのもの。手元のビューアで開きたい人向け。"""
@@ -179,8 +173,8 @@ def create_app(
                 "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
                 # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
                 "can_log_in": login_routes is not None,
-                # 中身を見せるのは名簿にいる人だけ。未ログインの人には枚数も出さない
-                "pages": page_count(pdf) if mode != MODE_LOGIN and mode != MODE_STRANGER else 0,
+                # 中身を見せてよい相手か。未ログイン・名簿外にはビューアごと出さない
+                "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
             },
         )
 
