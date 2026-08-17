@@ -16,15 +16,17 @@
 
 ## 現状
 
-開発初期。動いているのは署名コアと、書類が署名欄を自己記述する仕組みまで。
+開発初期。Google ログインと Drive をまだ差していないが、その2つを除けば一周している。
 
 | | 状態 |
 |---|---|
 | PAdES 署名 + RFC 3161 タイムスタンプ | 動く |
 | Typst の押印枠 → 空署名フィールドの自動注入 | 動く |
-| 署名ページ（web）・Google ログイン | 未着手 |
-| Drive 連携 | 未着手 |
-| QR ペイロードの HMAC | 未着手 |
+| QR ペイロードの HMAC | 動く |
+| 署名ページ（QR を開く → 自分の欄 → 署名 → 書き戻し） | 動く |
+| 複数人が順に署名しても前の署名が残る | 動く |
+| Google ログイン（OIDC） | 未着手（`IdentityProvider` の口だけある） |
+| Drive 連携 | 未着手（`DocumentStore` の口だけある） |
 
 設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)。
 
@@ -77,11 +79,14 @@ py -3.10 -m venv .venv
 .venv\Scripts\python.exe tools\build_sample.py
 ```
 
-開発用の自己署名証明書を作って署名してみる:
+署名ページを立てる（Google ログインも Drive も無しで一周できる）:
 
 ```powershell
-.venv\Scripts\python.exe tools\make_dev_cert.py secrets
+.venv\Scripts\python.exe tools\run_dev.py
 ```
+
+起動時に署名用の URL を印字する。本人確認は `?as=<メールアドレス>` で偽装する開発専用の実装で、
+`tools/` の中にしか無い（偽の認証がライブラリ側に混ざらないようにするため）。
 
 `secrets/` と `out/` は `.gitignore` 済み。
 TSA に接続するテストは既定で除外してある（`pytest -m network` で実行）。

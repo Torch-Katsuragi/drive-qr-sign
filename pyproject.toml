@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "jinja2>=3.1",
     "itsdangerous>=2.2",
+    "python-multipart>=0.0.9",
     # Google（OIDC・Drive）
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",
@@ -29,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "httpx>=0.27",  # fastapi.testclient が使う
     # 書類生成側の検証用。アプリ本体は typst に依存しない
     "typst>=0.13",
     "cryptography>=42",
@@ -36,6 +38,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+drive_qr_sign = ["templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

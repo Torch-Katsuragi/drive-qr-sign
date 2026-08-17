@@ -11,13 +11,27 @@ TSA の URL と署名鍵はいずれも引数で受け取る。どちらを使�
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, Iterator
 
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers, timestamps
+
+# PDF はパスでもストリームでも受ける。web 層はディスクに落とさず BytesIO で渡す
+PdfSource = Path | str | BinaryIO
+PdfSink = Path | str | BinaryIO
+
+
+@contextmanager
+def _as_stream(target: PdfSource | PdfSink, mode: str) -> Iterator[BinaryIO]:
+    if hasattr(target, "read") or hasattr(target, "write"):
+        yield target  # type: ignore[misc]
+    else:
+        with open(target, mode) as stream:  # type: ignore[arg-type]
+            yield stream
 
 # 無料の RFC 3161 TSA。プロトタイプの既定値であって、本番の選定結果ではない。
 FREE_TSA_URL = "https://freetsa.org/tsr"
@@ -37,14 +51,14 @@ class FieldPlacement:
 
 
 def add_signature_fields(
-    src: Path | str, dst: Path | str, placements: Iterable[FieldPlacement]
+    src: PdfSource, dst: PdfSink, placements: Iterable[FieldPlacement]
 ) -> list[str]:
     """空の署名フィールドを注入した PDF を dst に書く。注入したフィールド名を返す。
 
     増分更新で書くので、元の PDF の中身とページの見た目は一切変わらない。
     """
     names: list[str] = []
-    with open(src, "rb") as inf, open(dst, "wb") as outf:
+    with _as_stream(src, "rb") as inf, _as_stream(dst, "wb") as outf:
         writer = IncrementalPdfFileWriter(inf)
         for placement in placements:
             fields.append_signature_field(
@@ -60,13 +74,13 @@ def add_signature_fields(
     return names
 
 
-def list_signature_fields(src: Path | str, *, filled: bool | None = None) -> list[str]:
+def list_signature_fields(src: PdfSource, *, filled: bool | None = None) -> list[str]:
     """PDF が持っている署名フィールド名を返す。
 
     filled=False で「まだ署名されていない欄」だけを取れる。
     アプリはこれと OpenID の検証済みメールを突合して、押せるボタンを決める。
     """
-    with open(src, "rb") as inf:
+    with _as_stream(src, "rb") as inf:
         reader = PdfFileReader(inf)
         return [item[0] for item in fields.enumerate_sig_fields(reader, filled_status=filled)]
 
@@ -79,8 +93,8 @@ def load_signer(key_file: Path | str, cert_file: Path | str, *, key_passphrase: 
 
 
 def sign_field(
-    src: Path | str,
-    dst: Path | str | BinaryIO,
+    src: PdfSource,
+    dst: PdfSink,
     *,
     field_name: str,
     signer,
@@ -102,10 +116,6 @@ def sign_field(
     )
     pdf_signer = signers.PdfSigner(meta, signer=signer, timestamper=timestamper)
 
-    with open(src, "rb") as inf:
+    with _as_stream(src, "rb") as inf, _as_stream(dst, "wb") as outf:
         writer = IncrementalPdfFileWriter(inf)
-        if hasattr(dst, "write"):
-            pdf_signer.sign_pdf(writer, existing_fields_only=True, output=dst)
-        else:
-            with open(dst, "wb") as outf:
-                pdf_signer.sign_pdf(writer, existing_fields_only=True, output=outf)
+        pdf_signer.sign_pdf(writer, existing_fields_only=True, output=outf)

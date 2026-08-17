@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>書類への署名</h1>
+<p class="doc">{{ file_id }}</p>
+
+{% if not email %}
+  <p>署名するには Google アカウントでログインしてください。</p>
+  <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
+
+{% elif can_sign %}
+  <p class="who">{{ email }}</p>
+  <p class="role">{{ role }}</p>
+  <p>この欄に署名します。押すとタイムスタンプ付きの電子署名が PDF に埋まります。</p>
+  <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">{{ role }}として署名する</button>
+  </form>
+
+{% elif already_signed %}
+  <p class="who">{{ email }}</p>
+  <p class="role">{{ role }}</p>
+  <p>この書類の {{ role }} 欄は署名済みです。</p>
+
+{% else %}
+  <p class="who">{{ email }}</p>
+  <p>このアカウントに割り当てられた署名欄が、この書類にはありません。</p>
+{% endif %}
+
+{% if empty_fields %}
+  <p class="note">未署名の欄: {{ empty_fields | join("、") }}</p>
+{% else %}
+  <p class="note">この書類の署名欄はすべて埋まっています。</p>
+{% endif %}
+{% endblock %}

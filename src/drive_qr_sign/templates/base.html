@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}署名{% endblock %} | drive-qr-sign</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    margin: 0 auto; padding: 1.5rem 1.25rem; max-width: 32rem; line-height: 1.7;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  .doc { font-size: .85rem; opacity: .7; word-break: break-all; }
+  .role { font-size: 1.5rem; font-weight: 600; margin: .25rem 0; }
+  .who { font-size: .9rem; opacity: .75; }
+  button {
+    width: 100%; padding: 1rem; font-size: 1.1rem; font-weight: 600;
+    border: 0; border-radius: .5rem; margin-top: 1.5rem; cursor: pointer;
+  }
+  .note { font-size: .85rem; opacity: .75; margin-top: 1.5rem; }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+{% block content %}{% endblock %}
+</body>
+</html>

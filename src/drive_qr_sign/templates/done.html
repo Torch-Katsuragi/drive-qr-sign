@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}署名しました{% endblock %}
+{% block content %}
+<h1>署名しました</h1>
+<p class="doc">{{ file_id }}</p>
+<p class="role">{{ role }}</p>
+<p class="who">{{ email }}</p>
+<p>署名とタイムスタンプは PDF 自体に埋まりました。Adobe Acrobat の署名パネルで検証できます。</p>
+<p class="note">書き戻し先: {{ stored_as }}</p>
+{% endblock %}
