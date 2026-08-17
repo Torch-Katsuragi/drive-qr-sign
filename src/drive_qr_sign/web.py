@@ -27,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
+from .notify import Notifier, SignatureNotice, notify_quietly
 from .qr import InvalidPayload, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage
 from .seal_store import SealStore
@@ -66,6 +67,7 @@ def create_app(
     tsa_url: str | None = FREE_TSA_URL,
     seal_store: SealStore | None = None,
     can_read=None,
+    notifier: Notifier | None = None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
 
@@ -233,7 +235,20 @@ def create_app(
                 signer_name=email,
                 reason="確認",
             )
-        stored_as = document_store.store_signed(file_id, signed.getvalue())
+        signed_pdf = signed.getvalue()
+        stored_as = document_store.store_signed(file_id, signed_pdf)
+
+        # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
+        # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む
+        notify_quietly(
+            notifier,
+            SignatureNotice.create(
+                file_id=file_id,
+                signer_email=email,
+                role=role if mode == MODE_ROLE_READY else None,
+                signed_pdf=signed_pdf,
+            ),
+        )
 
         return TEMPLATES.TemplateResponse(
             request=request,
