@@ -63,6 +63,12 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
 
+    # ログイン経路を持つ IdentityProvider（Google OIDC など）はここで生える。
+    # 偽の身元確認を差した開発用サーバでは router が無いので、何も生えない
+    login_routes = getattr(identity_provider, "router", None)
+    if login_routes is not None:
+        app.include_router(login_routes)
+
     def _seal_for(email: str):
         """印影をどこから取るか。
 
@@ -136,6 +142,8 @@ def create_app(
                 "mode": mode,
                 "empty_fields": empty_fields,
                 "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
+                # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
+                "can_log_in": login_routes is not None,
             },
         )
 

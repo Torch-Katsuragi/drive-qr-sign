@@ -5,6 +5,12 @@
 
 {% if mode == "login" %}
   <p>署名するには Google アカウントでログインしてください。</p>
+  {% if can_log_in %}
+    <form method="get" action="/login">
+      <input type="hidden" name="next" value="/s/{{ file_id }}?m={{ mac }}">
+      <button type="submit">Google でログイン</button>
+    </form>
+  {% endif %}
   <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
 
 {% else %}

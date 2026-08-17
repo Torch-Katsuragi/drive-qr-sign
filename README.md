@@ -27,7 +27,7 @@
 | 複数人が順に署名しても前の署名が残る | 動く |
 | 印影（画像の登録・生成） | 動く |
 | 押印枠を持たない人の不可視署名 | 動く |
-| Google ログイン（OIDC） | 未着手（`IdentityProvider` の口だけある） |
+| Google ログイン（OIDC・PKCE つき） | 動く |
 | Drive 連携 | 未着手（`DocumentStore` の口だけある） |
 
 設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)。
@@ -110,8 +110,20 @@ py -3.10 -m venv .venv
 .venv\Scripts\python.exe tools\run_dev.py
 ```
 
-起動時に署名用の URL を印字する。本人確認は `?as=<メールアドレス>` で偽装する開発専用の実装で、
-`tools/` の中にしか無い（偽の認証がライブラリ側に混ざらないようにするため）。
+起動時に署名用の URL を印字する。
+
+### Google ログインを繋ぐ
+
+`secrets/oauth-client.json` があれば本物の Google ログインになり、無ければ
+`?as=<メールアドレス>` で名乗れる開発専用の身元確認になる（この偽の実装は `tools/` の中にしか無い）。
+
+1. Google Cloud コンソールで OAuth クライアント（ウェブ アプリケーション）を作る
+2. 承認済みリダイレクト URI に `http://localhost:8765/oauth2/callback` を入れる。
+   Google はループバックだけを特別扱いするので、手元では http のままで通る
+3. クライアントの詳細から JSON をダウンロードし、`secrets/oauth-client.json` に置く
+
+同意画面のスコープは `openid` と `email` だけでよい。
+Google アカウントのアイコンを印影に使いたい場合のみ `profile` を足す。
 
 `secrets/` と `out/` は `.gitignore` 済み。
 TSA に接続するテストは既定で除外してある（`pytest -m network` で実行）。
