@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -79,7 +80,8 @@ GMAIL_SENDER = Path(__file__).resolve().parent.parent / "secrets" / "gmail-sende
 
 # 送信専用サービス（Resend）の鍵。あれば Gmail より優先する（本番と同じ順番）
 RESEND_KEY = Path(__file__).resolve().parent.parent / "secrets" / "resend-api-key.txt"
-NOTICE_SENDER = "ねむりぎ工房 <no-reply@sleeptree.jp>"
+# 記録メールの差出人。自分のドメインに合わせて環境変数で渡す
+NOTICE_SENDER = os.environ.get("NOTICE_SENDER", "drive-qr-sign <no-reply@example.test>")
 
 
 def load_signers() -> dict:

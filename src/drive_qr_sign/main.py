@@ -15,7 +15,7 @@
     TSA_URL            省略すると freeTSA
     OAUTH_SCOPES       省略すると openid email
     RESEND_API_KEY     署名の記録メールを送る鍵（Resend）。あるとこちらが優先される
-    NOTICE_SENDER      その差出人（例: ねむりぎ工房 <no-reply@sleeptree.jp>）
+    NOTICE_SENDER      その差出人（例: 〇〇工房 <no-reply@example.com>）
     GMAIL_SENDER_JSON  Gmail から送る場合の資格情報。無ければ送らない
 
 Drive は Cloud Run に紐づいたサービスアカウントで触るので、鍵ファイルは持たない。

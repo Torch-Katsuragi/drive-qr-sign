@@ -135,11 +135,11 @@ def test_resend_notifier_posts_the_notice():
         role="組合長",
         signed_pdf=b"%PDF-1.7 signed",
     )
-    ResendNotifier("re_test_key", "ねむりぎ工房 <no-reply@sleeptree.jp>", post=post).notify(notice)
+    ResendNotifier("re_test_key", "〇〇工房 <no-reply@example.com>", post=post).notify(notice)
 
     assert captured["url"] == "https://api.resend.com/emails"
     assert captured["headers"]["Authorization"] == "Bearer re_test_key"
-    assert captured["body"]["from"] == "ねむりぎ工房 <no-reply@sleeptree.jp>"
+    assert captured["body"]["from"] == "〇〇工房 <no-reply@example.com>"
     assert captured["body"]["to"] == ["signer@example.test"]
     assert notice.digest in captured["body"]["text"]
 
@@ -161,4 +161,4 @@ def test_resend_notifier_raises_so_the_failure_is_logged():
         file_id="doc-1", signer_email="a@example.test", role=None, signed_pdf=b"x"
     )
     with pytest.raises(RuntimeError):
-        ResendNotifier("bad", "x@sleeptree.jp", post=post).notify(notice)
+        ResendNotifier("bad", "x@example.com", post=post).notify(notice)

@@ -1,7 +1,7 @@
 """記録メールの差出人ドメインを、Resend と Cloud DNS の両方に用意する。
 
-    python tools/setup_resend_domain.py sleeptree.jp            # 何を足すかを見るだけ
-    python tools/setup_resend_domain.py sleeptree.jp --apply    # Cloud DNS に足して検証を頼む
+    python tools/setup_resend_domain.py <ドメイン> --zone <Cloud DNSのゾーン> --dns-project <プロジェクト>
+    ...  --apply    # 表示だけでなく、実際に Cloud DNS へ足して検証を頼む
 
 やっていること:
 
@@ -13,9 +13,8 @@
 「Full access」の鍵が要る。送信するだけなら sending 権限で足りるので、
 運用に載せる鍵は分けてよい。
 
-⚠Cloud DNS のゾーン `sleeptree-jp`（プロジェクト nemurigi-kobo）には、
-Call-Agent が terraform で管理しているレコードが同居している。ここで足すのは
-メール用の別レコードなので衝突しないが、terraform 側の管理外になることは覚えておく。
+⚠ゾーンに terraform で管理しているレコードが同居している場合、ここで足すぶんは
+terraform の管理外になる。メール用の別レコードなので衝突はしないが、承知しておく。
 """
 
 from __future__ import annotations
@@ -30,8 +29,6 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parent.parent
 API_KEY_FILE = REPO_ROOT / "secrets" / "resend-api-key.txt"
 API = "https://api.resend.com"
-DNS_PROJECT = "nemurigi-kobo"
-DNS_ZONE = "sleeptree-jp"
 TTL = 300
 
 
@@ -62,7 +59,7 @@ def register(domain: str, key: str) -> dict:
     raise SystemExit(f"登録も取得もできない: {created.status_code} {created.text}")
 
 
-def dns_commands(records: list[dict]) -> list[list[str]]:
+def dns_commands(records: list[dict], *, zone: str, dns_project: str) -> list[list[str]]:
     """Resend が要求するレコードを gcloud の引数に直す。"""
     commands = []
     for record in records:
@@ -79,7 +76,7 @@ def dns_commands(records: list[dict]) -> list[list[str]]:
         commands.append(
             [
                 "gcloud", "dns", "record-sets", "create", name,
-                "--zone", DNS_ZONE, "--project", DNS_PROJECT,
+                "--zone", zone, "--project", dns_project,
                 "--type", record["type"], "--ttl", str(TTL),
                 "--rrdatas", ",".join(data),
             ]
@@ -88,10 +85,17 @@ def dns_commands(records: list[dict]) -> list[list[str]]:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        raise SystemExit(__doc__)
-    domain = sys.argv[1]
-    apply = "--apply" in sys.argv
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("domain", help="差出人に使うドメイン")
+    parser.add_argument("--zone", help="Cloud DNS のゾーン名（省略時は表示だけ）")
+    parser.add_argument("--dns-project", help="そのゾーンがあるプロジェクト")
+    parser.add_argument("--apply", action="store_true", help="実際に Cloud DNS へ足す")
+    args = parser.parse_args()
+    domain, apply = args.domain, args.apply
+    if apply and not (args.zone and args.dns_project):
+        raise SystemExit("--apply には --zone と --dns-project が要る")
 
     key = api_key()
     info = register(domain, key)
@@ -100,7 +104,7 @@ def main() -> None:
     for record in records:
         print(f"  {record['type']:<4} {record['name']}  {record['value'][:60]}")
 
-    for command in dns_commands(records):
+    for command in dns_commands(records, zone=args.zone or "<ゾーン>", dns_project=args.dns_project or "<プロジェクト>"):
         if not apply:
             print("  $ " + " ".join(command))
             continue

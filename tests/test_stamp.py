@@ -19,7 +19,7 @@ def test_caption_sits_above_the_seal():
 def test_long_address_is_wrapped_at_the_at_sign():
     """長いアドレスでも幅に収める。切り捨てない。"""
     short = compose_stamp(render_seal("松"), "a@b.jp", size=400)
-    long = compose_stamp(render_seal("松"), "matsumoto.katsuaki.kitayama@example.test", size=400)
+    long = compose_stamp(render_seal("松"), "very.long.address.for.wrapping@example.test", size=400)
     assert short.size == long.size == (400, 400)
 
 
