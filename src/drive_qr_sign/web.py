@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .notify import Notifier, SignatureNotice, notify_quietly
+from .cache import TimedCache
 from .qr import InvalidPayload, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
 from .signing import (
@@ -47,6 +48,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
+# 覚え書きの寿命。1回の画面表示（ページ→PDF→アイコン）を1往復にまとめるのが目的で、
+# 長くするほど「他の人が押した直後の古い状態」を見せる時間が延びる
+DOCUMENT_TTL = 10.0   # 書類の中身
+ACCESS_TTL = 30.0     # Drive の共有設定
+PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わらない）
+
 MODE_LOGIN = "login"  # 未ログイン
 MODE_STRANGER = "stranger"  # この書類を見る権限が無い
 MODE_ROLE_READY = "role_ready"  # 押印枠が空いている
@@ -79,6 +86,11 @@ def create_app(
     notifier: Notifier | None = None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
+
+    # 1回の画面表示のあいだ、同じ問い合わせを繰り返さないための覚え書き（cache.py）
+    documents = TimedCache(DOCUMENT_TTL)
+    access = TimedCache(ACCESS_TTL)
+    pictures = TimedCache(PICTURE_TTL)
 
     # 「この人はこの書類を見てよいか」の判定。本番は Drive の共有設定に従う
     # （DriveDocumentStore.can_read）。渡されなければ名簿で代用する——
@@ -115,7 +127,8 @@ def create_app(
             picture = _google_picture(request)
             if picture:
                 try:
-                    seal = prepare_uploaded(_fetch_picture(picture))
+                    raw = pictures.get(picture) or pictures.put(picture, _fetch_picture(picture))
+                    seal = prepare_uploaded(raw)
                 except Exception:
                     logger.exception("アイコンを取れなかった: %s", email)
         if seal is None:
@@ -140,14 +153,36 @@ def create_app(
         source = getattr(identity_provider, "picture_url", None)
         return source(request) if source else None
 
-    def _load(file_id: str, mac: str) -> bytes:
+    def _allowed(file_id: str, email: str) -> bool:
+        """この人にこの書類を見せてよいか。共有設定の問い合わせは数十秒だけ覚える。
+
+        共有を外してから実際に閉まるまで、最大 ACCESS_TTL のずれが出る。
+        回覧を閉じるのは分単位の作業なので、そこは許容する。
+        """
+        key = (file_id, email.strip().lower())
+        remembered = access.get(key)
+        if remembered is None:
+            remembered = access.put(key, bool(_can_read(file_id, email)))
+        return remembered
+
+    def _load(file_id: str, mac: str, *, fresh: bool = False) -> bytes:
+        """書類の中身。読むだけなら少しのあいだ使い回す。
+
+        ⚠署名・取り消しでは必ず `fresh=True`。古い版を土台に署名すると、
+        あいだに押された人の署名ごと消した版を書き戻すことになる。
+        """
         try:
             verify_mac(qr_secret, file_id, mac)
         except InvalidPayload:
             # 偽造 QR。どこが違うかは教えない
             raise HTTPException(status_code=403, detail="この URL は無効です")
+
+        if not fresh:
+            remembered = documents.get(file_id)
+            if remembered is not None:
+                return remembered
         try:
-            return document_store.fetch(file_id)
+            return documents.put(file_id, document_store.fetch(file_id))
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail="書類が見つかりません")
 
@@ -162,7 +197,7 @@ def create_app(
         empty_fields = list_signature_fields(io.BytesIO(pdf), filled=False)
         if not email:
             return MODE_LOGIN, None, empty_fields
-        if not _can_read(file_id, email):
+        if not _allowed(file_id, email):
             return MODE_STRANGER, None, empty_fields
 
         role = signer_directory.role_for(email)
@@ -202,13 +237,14 @@ def create_app(
         QR は紙に刷られて回覧されるので、URL を知っていることは何の資格でもない。
         見せてよいかは Drive の共有設定に従う（アプリの名簿では決めない）。
         """
-        pdf = _load(file_id, mac)
+        # ⚠先に相手を確かめる。取ってから断ると、断る相手のために毎回
+        # Drive から1MB落とすことになる（実測: 401 を返すのに1.5秒かかっていた）
         email = identity_provider.verified_email(request)
         if not email:
             raise HTTPException(status_code=401, detail="ログインが必要です")
-        if not _can_read(file_id, email):
+        if not _allowed(file_id, email):
             raise HTTPException(status_code=403, detail="この書類を見られるアカウントではありません")
-        return pdf
+        return _load(file_id, mac)
 
     # ⚠`/healthz` は使えない。Cloud Run のフロントエンドが横取りして、
     # リクエストがコンテナまで届かない（実測: アクセスログに一切残らず Google の404が返る）
@@ -263,7 +299,7 @@ def create_app(
         # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
         # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
         # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
-        pdf = _load(file_id, m)
+        pdf = _load(file_id, m, fresh=True)
 
         email = identity_provider.verified_email(request)
         if not email:
@@ -308,6 +344,7 @@ def create_app(
             )
         signed_pdf = signed.getvalue()
         document_store.store_signed(file_id, signed_pdf)
+        documents.put(file_id, signed_pdf)  # 直後の画面はこれを見る
 
         # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
         # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む
@@ -330,7 +367,7 @@ def create_app(
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
         その署名が自分のものを含めて覆っているので、抜くと相手のものが壊れる。
         """
-        pdf = _load(file_id, m)
+        pdf = _load(file_id, m, fresh=True)
 
         email = identity_provider.verified_email(request)
         if not email:
@@ -351,6 +388,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc))
 
         document_store.store_signed(file_id, reverted)
+        documents.put(file_id, reverted)
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
         notify_quietly(

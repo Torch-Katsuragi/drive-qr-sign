@@ -18,7 +18,7 @@ from PIL import Image
 from drive_qr_sign.documents import LocalDocumentStore
 from drive_qr_sign.identity import SignerDirectory, SignerEntry, silent_field_name
 from drive_qr_sign.qr import make_mac
-from drive_qr_sign.signing import list_signature_fields, load_signer
+from drive_qr_sign.signing import list_signature_fields, load_signer, sign_field
 from drive_qr_sign.web import create_app
 
 SECRET = b"test-secret-do-not-use"
@@ -36,6 +36,21 @@ class FakeIdentityProvider:
         return self.email
 
 
+class CountingStore:
+    """Drive の代わり。何回取りに行ったかを数える。"""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.fetches = 0
+
+    def fetch(self, file_id: str) -> bytes:
+        self.fetches += 1
+        return self.inner.fetch(file_id)
+
+    def store_signed(self, file_id: str, pdf: bytes):
+        return self.inner.store_signed(file_id, pdf)
+
+
 @pytest.fixture
 def env(fields_pdf: Path, dev_cert, tmp_path: Path):
     store_dir = tmp_path / "store"
@@ -44,7 +59,7 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
 
     key, cert = dev_cert
     identity = FakeIdentityProvider()
-    store = LocalDocumentStore(store_dir)
+    store = CountingStore(LocalDocumentStore(store_dir))
     app = create_app(
         document_store=store,
         signer_directory=SignerDirectory(
@@ -59,7 +74,9 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
         qr_secret=SECRET,
         tsa_url=None,  # テストはネットワークに出ない
     )
-    return TestClient(app), identity, store_dir
+    client = TestClient(app)
+    client.store = store  # 取りに行った回数を見るテスト用
+    return client, identity, store_dir
 
 
 def _url(file_id: str = FILE_ID, secret: bytes = SECRET) -> str:
@@ -488,3 +505,55 @@ def test_the_last_signer_can_still_take_theirs_back(env):
         f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf}
     ).status_code == 200
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]
+
+
+def test_one_screen_costs_one_trip_to_the_store(env):
+    """署名ページと書類本体で、同じものを2回取りに行かない。
+
+    実測で、画面1枚のために Drive へ4往復していた（fetch 1.1秒・permissions.list 0.3秒）。
+    体感の重さはここで、描画側ではなかった。
+    """
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+
+    client.get(_url())
+    client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}")
+
+    assert client.store.fetches == 1
+
+
+def test_the_document_is_not_fetched_for_someone_who_cannot_have_it(env):
+    """断る相手のために書類を落とさない。取ってから断ると、その分だけ待たされる。"""
+    client, identity, _ = env
+    url = f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}"
+
+    assert client.get(url).status_code == 401  # 未ログイン
+    identity.email = "yoso@example.test"
+    assert client.get(url).status_code == 403  # 共有されていない
+    assert client.store.fetches == 0
+
+
+def test_signing_never_builds_on_a_remembered_copy(env, dev_cert):
+    """署名は必ず最新を土台にする。古い版に押すと、あいだの人の署名を落とす。"""
+    client, identity, store_dir = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)  # ここで手元に覚える
+
+    # 別の経路（別インスタンスの署名など）で、その間に担当欄が埋まる
+    key, cert = dev_cert
+    signed = io.BytesIO()
+    sign_field(
+        io.BytesIO((store_dir / f"{FILE_ID}.pdf").read_bytes()),
+        signed,
+        field_name="担当",
+        signer=load_signer(key, cert),
+        tsa_url=None,
+        signer_name="soumu@example.test",
+    )
+    (store_dir / f"{FILE_ID}.signed.pdf").write_bytes(signed.getvalue())
+
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert sorted(list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True)) == sorted(
+        ["組合長", "担当"]
+    )
