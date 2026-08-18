@@ -179,6 +179,11 @@ def create_app(
         total = (marks[-1][1] - marks[0][1]) * 1000
         logger.info("%s: %s 合計=%.0fms", what, " ".join(parts), total)
 
+    def _web_url(file_id: str) -> str | None:
+        """原本を人が開く URL。倉庫が持っていなければ None。"""
+        source = getattr(document_store, "web_url", None)
+        return source(file_id) if source else None
+
     def _version(file_id: str) -> str | None:
         """倉庫が持っている版。分からない倉庫なら None。"""
         source = getattr(document_store, "version", None)
@@ -318,6 +323,8 @@ def create_app(
                 "can_log_in": login_routes is not None,
                 # 中身を見せてよい相手か。未ログイン・共有されていない人にはビューアごと出さない
                 "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
+                # 原本を開く先。Drive にあるならそちらを指す（無ければアプリが配る PDF）
+                "document_url": _web_url(file_id),
             },
         )
 

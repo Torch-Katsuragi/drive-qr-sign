@@ -649,3 +649,37 @@ def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
     (store_dir / f"{FILE_ID}.signed.pdf").write_bytes(signed.getvalue())
 
     assert "組合長" not in client.get(_url()).text.split("未署名の押印枠:")[1]
+
+
+def test_the_document_links_to_the_original_in_drive(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """原本を開く先は Drive。版履歴もコメントもそちらにあり、共有もそこで決まっている。"""
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    class DriveLike(LocalDocumentStore):
+        def web_url(self, file_id: str) -> str:
+            return f"https://drive.google.com/file/d/{file_id}/view"
+
+    key, cert = dev_cert
+    app = create_app(
+        document_store=DriveLike(store_dir),
+        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
+        identity_provider=FakeIdentityProvider("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    body = TestClient(app).get(_url()).text
+    assert f"https://drive.google.com/file/d/{FILE_ID}/view" in body
+    # 見出しは置かない（本文中の "書類の中身" は CSS のコメントにも出るので、タグで見る）
+    assert "<h2" not in body
+
+
+def test_without_drive_the_app_still_offers_the_pdf(env):
+    """Drive を使わない導入先では、アプリが配る PDF への導線が残る。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    body = client.get(_url()).text
+    assert "PDF を開く" in body
+    assert "drive.google.com" not in body

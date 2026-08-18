@@ -28,6 +28,9 @@ class DocumentStore(Protocol):
         省略可（実装が無ければ、毎回そのまま取りに行くだけ）。
         """
 
+    def web_url(self, file_id: str) -> str | None:
+        """人がその書類を開くための URL。省略可（無ければアプリが PDF を配る）。"""
+
 
 class LocalDocumentStore:
     """ローカルのディレクトリを Drive の代わりに使う開発用の実装。

@@ -70,6 +70,14 @@ class DriveDocumentStore:
             # 存在の有無を問い合わせ元に教えない
             raise DocumentNotFound(f"取得できない: {file_id}") from exc
 
+    def web_url(self, file_id: str) -> str:
+        """人が Drive で開くための URL。
+
+        アプリの PDF 配信ではなく本家を指す。版履歴もコメントもそちらにあるし、
+        署名者はすでにこのファイルを共有されている（それがアクセスの根拠でもある）。
+        """
+        return f"https://drive.google.com/file/d/{file_id}/view"
+
     def version(self, file_id: str) -> str | None:
         """いまの版番号。中身を落とさずに「変わっていないか」を確かめるために使う。
 

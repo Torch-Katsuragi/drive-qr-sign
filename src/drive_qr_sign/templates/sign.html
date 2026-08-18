@@ -111,12 +111,18 @@
 </div>
 
 {% if can_read %}
+  {# 見出しは置かない。書類そのものが見えているので、それが何かは言うまでもない #}
   <section class="document">
-    <h2>書類の中身</h2>
+    <p class="note">
+      {% if document_url %}
+        <a href="{{ document_url }}" target="_blank" rel="noopener">Google ドライブで開く</a>
+      {% else %}
+        <a href="/s/{{ file_id }}/document.pdf?m={{ mac }}" target="_blank" rel="noopener">PDF を開く</a>
+      {% endif %}
+    </p>
     <div id="document"
          data-src="/s/{{ file_id }}/document.pdf?m={{ mac }}"
          data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
-    <p class="note"><a href="/s/{{ file_id }}/document.pdf?m={{ mac }}" target="_blank" rel="noopener">PDF を開く</a></p>
   </section>
   <script type="module" src="/static/viewer.js"></script>
   <script src="/static/sign.js"></script>

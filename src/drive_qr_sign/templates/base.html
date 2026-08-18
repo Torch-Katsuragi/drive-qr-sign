@@ -139,7 +139,8 @@
   summary { font-size: .85rem; color: var(--muted); cursor: pointer; }
 
   /* 書類の中身。押す前に読めることが紙の代わりの最低条件 */
-  .document { margin-top: 2.5rem; border-top: 1px solid var(--line); }
+  .document { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  .document > .note { margin: 0 0 .5rem; }
   /* 書類はカードの余白を打ち消して横いっぱいに出す。読むのが目的の場所なので、
      紙の左右に額縁を作らない（スマホでは画面幅いっぱいになる） */
   #document { margin: 1rem calc(-1 * var(--pad)) 0; }
