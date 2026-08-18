@@ -80,11 +80,19 @@
       <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}" enctype="multipart/form-data" data-inplace>
         <input type="hidden" name="csrf" value="{{ csrf }}">
 
-        {# 押される絵そのものが、印影を選ぶ入口になる。タップすると候補が並ぶ #}
-        <details class="seals">
-          <summary title="印影を選ぶ">
-            <img class="seal" id="seal-preview" src="/seal/preview.png" alt="押される印影">
-          </summary>
+        {#
+          押される絵そのものが、印影を選ぶ入口。タップすると背景を暗くして候補が出る。
+          その場で開くと署名ボタンが押し下げられて、押す場所が動いてしまう。
+
+          ⚠dialog は form の中に置く。外に出すと、選んだ値が一緒に送られない。
+          JS が動かない環境では選べず、既定の印影で押される（この機能が無かった頃と同じ）。
+        #}
+        <button type="button" class="as-seal" data-opens="seal-dialog" title="印影を選ぶ">
+          <img class="seal" id="seal-preview" src="/seal/preview.png" alt="押される印影">
+        </button>
+
+        <dialog id="seal-dialog" class="seals">
+          <p class="who">押す印影を選ぶ</p>
           <div class="choices">
             {% for choice in seal_choices %}
               <label>
@@ -96,12 +104,13 @@
               </label>
             {% endfor %}
             <label class="upload">
-              <input type="file" name="seal_image" accept="image/*">
               <span>画像をアップロード</span>
+              <input type="file" name="seal_image" accept="image/*">
             </label>
           </div>
           <p class="note">選んだ印影はこの署名にだけ使います。保存はしません。</p>
-        </details>
+          <button type="button" class="quiet" data-closes>閉じる</button>
+        </dialog>
 
         <button type="submit">{{ role }}として署名する</button>
       </form>

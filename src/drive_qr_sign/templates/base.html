@@ -136,27 +136,35 @@
 
   input[type=file] { width: 100%; font: inherit; font-size: .9rem; margin-top: .5rem; }
 
-  /* 押される絵そのものが、印影を選ぶ入口。タップすると候補が並ぶ */
-  .seals { text-align: center; }
-  .seals summary { list-style: none; cursor: pointer; }
-  .seals summary::-webkit-details-marker { display: none; }
-  .seals[open] summary .seal { outline: 2px solid var(--quiet-line); }
+  /* 押される絵そのものが、印影を選ぶ入口。押すと背景を暗くして候補が出る */
+  .as-seal {
+    width: auto; padding: 0; background: none; border: 0; color: inherit;
+    justify-self: center;
+  }
+  .as-seal:hover { filter: brightness(1.03); }
+
+  dialog.seals {
+    width: min(22rem, calc(100vw - 2rem));
+    padding: 1.25rem; border: 1px solid var(--line); border-radius: .75rem;
+    background: var(--card); color: var(--ink);
+  }
+  dialog.seals::backdrop { background: rgb(0 0 0 / .55); }
+  dialog.seals .who { margin: 0 0 .75rem; text-align: center; }
+  dialog.seals .note { margin: .75rem 0; }
+
   .choices {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
-    gap: .5rem; margin: .5rem 0;
+    gap: .5rem;
   }
   .choices label {
-    display: grid; gap: .25rem; justify-items: center;
+    display: grid; gap: .25rem; justify-items: center; align-content: start;
     padding: .5rem; border: 1px solid var(--line); border-radius: .5rem;
     font-size: .75rem; color: var(--muted); cursor: pointer;
   }
   .choices label:has(:checked) { border-color: var(--seal); color: var(--ink); }
   .choices img { width: 100%; max-width: 4.5rem; aspect-ratio: 1; object-fit: contain; }
   .choices input[type=radio] { display: none; }
-  .choices .upload { justify-items: stretch; text-align: left; }
-  .choices .upload input[type=file] { font-size: .75rem; margin: 0; }
-  details { width: 100%; text-align: left; }
-  summary { font-size: .85rem; color: var(--muted); cursor: pointer; }
+  .choices .upload input[type=file] { font-size: .7rem; margin: 0; }
 
   /* 書類の中身。押す前に読めることが紙の代わりの最低条件 */
   .document { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }

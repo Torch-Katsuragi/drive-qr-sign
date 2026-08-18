@@ -50,6 +50,18 @@ function swapAction(html) {
   if (fresh && current) current.replaceWith(fresh);
 }
 
+// 印影の選択は背景を暗くしたポップアップで出す。その場で開くと署名ボタンが
+// 押し下げられて、押す場所が動いてしまう。
+document.addEventListener("click", (event) => {
+  const opener = event.target.closest("[data-opens]");
+  if (opener) {
+    document.getElementById(opener.dataset.opens)?.showModal();
+    return;
+  }
+  const closer = event.target.closest("[data-closes]");
+  if (closer) closer.closest("dialog")?.close();
+});
+
 // 印影を選んだら、押される絵の表示をその場で入れ替える。
 // 何が押されるのかを、押す前に見て確かめられることが目的。
 document.addEventListener("change", (event) => {
@@ -59,6 +71,7 @@ document.addEventListener("change", (event) => {
   const radio = event.target.closest('input[name="seal_choice"]');
   if (radio?.dataset.preview) {
     preview.src = radio.dataset.preview;
+    radio.closest("dialog")?.close();  // 選んだら閉じる。選択そのものが返事になる
     return;
   }
 
@@ -69,5 +82,6 @@ document.addEventListener("change", (event) => {
     file.closest(".choices")?.querySelectorAll('input[name="seal_choice"]').forEach((other) => {
       other.checked = false;
     });
+    file.closest("dialog")?.close();
   }
 });
