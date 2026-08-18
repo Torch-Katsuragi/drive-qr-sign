@@ -1,5 +1,13 @@
 # drive-qr-sign
 
+> **In English** — Japanese organizations circulate paper documents and stamp them with a personal
+> seal (*hanko*). This app replaces **only that stamping step** with a real PAdES signature, while the
+> document stays in Google Drive. Print the document with a QR code, circulate the paper as before,
+> and each approver scans the QR, signs in with Google, and taps once: the app fetches the PDF from
+> Drive, embeds a PAdES signature with an RFC 3161 timestamp, and writes it back as a new revision
+> of the same file. The proof lives in the PDF, so signed documents outlive this app.
+> **Documentation and code comments are in Japanese**, because the problem it solves is.
+
 紙で回覧した書類の「押印」だけを電子署名に置き換える。書類は Google Drive に置いたまま動かさない。
 印刷した QR をスマホで読むと署名ページが開き、Google ログイン後ワンタップで PAdES 署名と
 タイムスタンプが PDF に埋まる。
