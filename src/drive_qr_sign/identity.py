@@ -8,12 +8,12 @@
 | 名簿 | 役職 | 押すとどうなるか |
 |---|---|---|
 | いる | あり | その役職の欄に印影が乗る |
-| いる | なし | 不可視署名がサイレントで付く（紙面は変わらない） |
-| いない | — | 押せない |
+| いる／いない | なし | 不可視署名がサイレントで付く（紙面は変わらない） |
 
-名簿を持つ理由は順番の管理ではない。このアプリは Drive を導入組織の管理用アカウントで
-読むので、署名者本人の Drive ACL が効かない。名簿がアクセス制御そのものになる。
-紙に刷った QR の URL は秘密として扱えないことに注意（docs/DESIGN.md の代償の節）。
+Drive で共有されていない人は、そもそもこの画面まで来られない。
+
+名簿はアクセス制御ではない。「この書類を見てよいか」は Drive の共有設定が決める
+（`DriveDocumentStore.can_read`）。名簿が決めるのは、どの押印枠を押せるかだけ。
 
 本人性は Google の OpenID で検証済みのメールアドレスに委ねる。
 `email_verified` が false の ID トークンを通さないことは、OIDC 実装側の責任。
@@ -68,18 +68,25 @@ class SignerDirectory:
         entry = self.entry_for(email)
         return entry.role if entry else None
 
-    def seal_for(self, email: str):
-        """名簿から引ける印影。
+    def seal_image_for(self, email: str):
+        """組織が名簿で指定した印影画像。指定が無ければ None。
 
-        彫る文字が書かれていなければ役職で作る。押印枠が空のまま署名されるより、
-        役職印が押してあるほうが紙として自然なため。
+        生成はここではやらない。生成まで返すと、Google アカウントのアイコンに
+        出番が来なくなる（アイコンのほうが既定であってほしい）。
         """
-        from .seal import seal_for
+        from .seal import prepare_uploaded
 
+        entry = self.entry_for(email)
+        if entry is None or not entry.seal_image:
+            return None
+        return prepare_uploaded(Path(entry.seal_image).read_bytes())
+
+    def seal_text_for(self, email: str) -> str | None:
+        """印影に彫る文字。名簿に無ければ役職で代用する。"""
         entry = self.entry_for(email)
         if entry is None:
             return None
-        return seal_for(entry.seal_text or entry.role, entry.seal_image)
+        return entry.seal_text or entry.role
 
     def emails_for(self, role: str) -> list[str]:
         return [email for email, entry in self._by_email.items() if entry.role == role]

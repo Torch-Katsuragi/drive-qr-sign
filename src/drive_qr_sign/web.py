@@ -102,7 +102,7 @@ def create_app(
         if uploaded:
             seal = prepare_uploaded(uploaded)
         if seal is None:
-            seal = signer_directory.seal_for(email)
+            seal = signer_directory.seal_image_for(email)
         if seal is None:
             picture = _google_picture(request)
             if picture:
@@ -111,8 +111,9 @@ def create_app(
                 except Exception:
                     logger.exception("アイコンを取れなかった: %s", email)
         if seal is None:
-            # 名簿に何も無い人。アドレスの頭文字で最低限の見た目を作る
-            seal = render_seal(email.strip()[:1].upper() or "?")
+            # アイコンが無い（profile を要求していない・設定していない）人。
+            # 名簿の文字、無ければアドレスの頭文字で最低限の見た目を作る
+            seal = render_seal(signer_directory.seal_text_for(email) or email.strip()[:1].upper() or "?")
         return compose_stamp(seal, email)
 
     def _google_picture(request: Request) -> str | None:
