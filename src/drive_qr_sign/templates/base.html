@@ -70,10 +70,33 @@
   p { margin: .6rem 0; }
   a { color: var(--accent); }
 
-  .doc {
-    font-size: .8rem; color: var(--muted);
-    padding-bottom: 1.25rem; margin: 0; border-bottom: 1px solid var(--line);
+  /* 見出しと、いま誰として押すかを1行に並べる */
+  .head { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; }
+  .head > div { min-width: 0; flex: 1; }
+
+  /* ⚠details は flex アイテムにすると、中身（顔だけ）ではなく親いっぱいに広がる。
+     幅を明示しないと見出しが1文字ずつ折り返されるところまで潰れる（実測） */
+  .account { position: relative; flex: 0 0 auto; width: 2.75rem; }
+  .account summary { list-style: none; cursor: pointer; }
+  .account summary::-webkit-details-marker { display: none; }
+  .account summary img {
+    display: block; width: 2.75rem; height: 2.75rem;
+    object-fit: cover; border-radius: 50%; border: 1px solid var(--line);
+    background: var(--bg);
   }
+  .account .menu {
+    position: absolute; right: 0; top: calc(100% + .5rem); z-index: 1;
+    width: max(14rem, 60vw); max-width: 20rem;
+    display: grid; gap: .5rem; text-align: left;
+    padding: .9rem 1rem;
+    background: var(--card); border: 1px solid var(--line); border-radius: .6rem;
+    box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / .18);
+  }
+  .account .menu .who { margin: 0; }
+  .account .menu a { font-size: .9rem; }
+
+  .doc { font-size: .8rem; color: var(--muted); margin: 0; }
+  .head { padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
   .who { font-size: .9rem; color: var(--muted); margin-top: 1.25rem; }
   .role { font-size: clamp(1.5rem, 1.2rem + 2vw, 2.25rem); font-weight: 600; margin: 0 0 .5rem; }
   .note { font-size: .85rem; color: var(--muted); }

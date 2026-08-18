@@ -386,6 +386,37 @@ def test_signer_can_take_back_their_own_signature(env):
     assert list_signature_fields(signed, filled=False) == ["組合長", "参事", "担当"]
 
 
+def test_the_signing_account_is_always_on_screen(env):
+    """誰として押すのかが、押す前に必ず見えていること。取り違えは後から直せない。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    body = client.get(_url()).text
+    assert '/account/icon.png' in body
+    assert "kumiaicho@example.test" in body
+
+    icon = client.get("/account/icon.png")
+    assert icon.status_code == 200
+    assert icon.content.startswith(PNG_MAGIC)
+
+
+def test_the_account_icon_is_the_same_picture_that_lands_on_paper(env):
+    """右上の顔と紙に載る印が違うと、確認の役に立たない。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    from drive_qr_sign.seal import compose_stamp
+
+    icon = Image.open(io.BytesIO(client.get("/account/icon.png").content))
+    stamp = Image.open(io.BytesIO(client.get("/seal/preview.png").content)).convert("RGBA")
+    # 押印枠に入るのは、この顔の上にアドレスの帯を足したもの
+    assert compose_stamp(icon, "kumiaicho@example.test") == stamp
+
+
+def test_the_account_is_not_shown_to_a_visitor_who_has_not_logged_in(env):
+    client, _, _ = env
+    assert "/account/icon.png" not in client.get(_url()).text
+    assert client.get("/account/icon.png").status_code == 401
+
+
 def test_signing_comes_back_to_the_same_page(env):
     """押した後に「署名しました」という画面へ移らず、同じ画面のボタンが入れ替わること。
 

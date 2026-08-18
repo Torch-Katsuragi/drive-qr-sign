@@ -1,7 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>書類への署名</h1>
-<p class="doc">{{ file_id }}</p>
+<header class="head">
+  <div>
+    <h1>書類への署名</h1>
+    <p class="doc">{{ file_id }}</p>
+  </div>
+
+  {#
+    いま誰として押そうとしているかを常に画面に出す。押印の取り違えは
+    後から直せないので、押す直前に見えていることに意味がある。
+    出す絵は押印枠に入るものと同じ（違う絵だと確認の役に立たない）。
+  #}
+  {% if email %}
+    <details class="account">
+      <summary title="署名するアカウント"><img src="/account/icon.png" alt="{{ email }}"></summary>
+      <div class="menu">
+        <p class="who">{{ email }} として署名します</p>
+        {% if can_log_in %}
+          <a href="/login?next={{ ("/s/%s?m=%s" % (file_id, mac)) | urlencode }}">別のアカウントに切り替える</a>
+          <a href="/logout">ログアウト</a>
+        {% else %}
+          <p class="note">この開発用サーバでは切り替えられません。</p>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+</header>
 
 {#
   押す前と押した後で、同じ場所のボタンが「署名する」⇄「取り消す」と入れ替わるだけにする。

@@ -95,16 +95,16 @@ def create_app(
     if login_routes is not None:
         app.include_router(login_routes)
 
-    def _stamp_for(request: Request, email: str, uploaded: bytes | None):
-        """押印枠に押す絵を決める。
+    def _seal_source(request: Request, email: str, uploaded: bytes | None):
+        """印影の元になる絵を決める。
 
         1. その場でアップロードされた画像（この署名かぎり。保管しない）
         2. 名簿に組織が指定した画像
         3. Google アカウントのアイコン
         4. 名簿の文字から生成した丸印（無ければ役職から）
 
-        どれになっても、上にメールアドレスを添えて返す。アイコンや写真は
-        紙の上で誰の印か分からないため（seal.compose_stamp）。
+        押印枠に押すときは、この絵の上にメールアドレスを添える（_stamp_for）。
+        画面右上のアカウントアイコンには、添えずにそのまま出す。
         """
         seal = None
         if uploaded:
@@ -122,7 +122,14 @@ def create_app(
             # アイコンが無い（profile を要求していない・設定していない）人。
             # 名簿の文字、無ければアドレスの頭文字で最低限の見た目を作る
             seal = render_seal(signer_directory.seal_text_for(email) or email.strip()[:1].upper() or "?")
-        return compose_stamp(seal, email)
+        return seal
+
+    def _stamp_for(request: Request, email: str, uploaded: bytes | None):
+        """押印枠に押す絵。元の絵の上にメールアドレスを添えて返す。
+
+        アイコンや写真は紙の上で誰の印か分からないため（seal.compose_stamp）。
+        """
+        return compose_stamp(_seal_source(request, email, uploaded), email)
 
     def _google_picture(request: Request) -> str | None:
         """ログインしている Google アカウントのアイコン URL。
@@ -367,6 +374,20 @@ def create_app(
             raise HTTPException(status_code=401, detail="ログインが必要です")
         buffer = io.BytesIO()
         _stamp_for(request, email, None).save(buffer, format="PNG")
+        return Response(buffer.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/account/icon.png")
+    def account_icon(request: Request) -> Response:
+        """いまログインしている人の顔。画面右上に出す。
+
+        押印枠に押される絵と同じものを使う。ここに出ている顔と紙に載る印が
+        違うと、切り替えの導線としての意味が無い。
+        """
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        buffer = io.BytesIO()
+        _seal_source(request, email, None).save(buffer, format="PNG")
         return Response(buffer.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
     return app
