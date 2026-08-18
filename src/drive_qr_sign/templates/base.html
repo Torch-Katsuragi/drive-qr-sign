@@ -18,6 +18,11 @@
     --line: #e2e2e7;
     --seal: #c7112c;
     --accent: #1a4fd6;
+    /* 取り消しボタン。押すのとは別の行為なので朱色から色相をずらす。
+       ただし塗りつぶさない——主役は署名ボタンで、取り消しはその後始末 */
+    --quiet-ink: #3f5a86;
+    --quiet-line: #b5c4dc;
+    --quiet-bg: #f1f5fb;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -27,6 +32,10 @@
       --muted: #a0a0aa;
       --line: #33333c;
       --accent: #7aa2ff;
+      /* ⚠暗い側は --muted と --line が背景に沈んで、ボタンが見えなくなる */
+      --quiet-ink: #9db6da;
+      --quiet-line: #44526b;
+      --quiet-bg: #242b38;
     }
   }
 
@@ -92,7 +101,10 @@
     border: 0; border-radius: .6rem; cursor: pointer;
   }
   button:hover { filter: brightness(1.08); }
-  button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; }
+  button.quiet {
+    background: var(--quiet-bg); color: var(--quiet-ink);
+    border: 1px solid var(--quiet-line); font-weight: 400;
+  }
   /* 押せない理由は文章で添える。ボタンを消すと「取り消せる場所がある」ことごと見えなくなる */
   button[disabled] { opacity: .45; cursor: not-allowed; }
   button[disabled]:hover { filter: none; }
