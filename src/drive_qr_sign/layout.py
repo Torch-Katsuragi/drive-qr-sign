@@ -50,3 +50,61 @@ def read_qr_rect(pdf: bytes) -> dict | None:
         return json.loads(str(raw))["qr"]
     except (ValueError, KeyError):
         return None
+
+
+def describe(pdf: bytes) -> dict:
+    """紙の上に何がどこにあるか。カメラ表示（AR）が必要とする情報の全部。
+
+    座標はすべて PDF 座標（左下原点・pt）。カメラ側は QR の矩形を手がかりに
+    この座標系へ変換する。
+    """
+    from pyhanko.sign import fields as sig_fields
+
+    reader = PdfFileReader(io.BytesIO(pdf))
+    pages, _, _ = reader.find_page_container(0)
+    page = _resolve(_resolve(_resolve(pages)["/Kids"])[0])
+    media = [float(_resolve(v)) for v in _resolve(_media_box(page))]
+
+    signed_by = {}
+    for embedded in reader.embedded_signatures:
+        name = embedded.sig_object.get("/Name")
+        signed_by[embedded.field_name] = str(name) if name else ""
+
+    boxes, silent = [], []
+    for name, value, ref in sig_fields.enumerate_sig_fields(reader):
+        rect = ref.get_object().get("/Rect")
+        box = [float(_resolve(v)) for v in _resolve(rect)] if rect is not None else [0, 0, 0, 0]
+        entry = {
+            "name": name,
+            "box": box,
+            "signed": name in signed_by,
+            "signer": signed_by.get(name, ""),
+        }
+        # 不可視署名（サイレント組）は紙の上に場所を持たない。脇にカードで出す
+        if box[2] - box[0] <= 0 or box[3] - box[1] <= 0:
+            if entry["signed"]:
+                silent.append({"signer": entry["signer"]})
+        else:
+            boxes.append(entry)
+
+    return {
+        "page": {"width": media[2] - media[0], "height": media[3] - media[1]},
+        "qr": read_qr_rect(pdf),
+        "fields": boxes,
+        "silent": silent,
+    }
+
+
+def _resolve(obj):
+    return obj.get_object() if hasattr(obj, "get_object") else obj
+
+
+def _media_box(page):
+    node = page
+    while node is not None:
+        box = node.get("/MediaBox")
+        if box is not None:
+            return box
+        parent = node.get("/Parent")
+        node = _resolve(parent) if parent is not None else None
+    raise ValueError("/MediaBox が見つからない")

@@ -120,6 +120,13 @@
   }
   .textLayer ::selection { background: rgba(0, 100, 255, .3); }
   form { width: 100%; display: grid; gap: .75rem; }
+
+  /* カメラ表示。映像の上に重ね描き用のキャンバスをぴたりと載せる */
+  .stage { position: relative; width: 100%; margin-top: 1rem; background: #000; border-radius: .5rem; overflow: hidden; }
+  .stage video, .stage canvas { display: block; width: 100%; height: auto; }
+  .stage canvas { position: absolute; inset: 0; }
+  .cards { list-style: none; padding: 0; }
+  .cards li { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .4rem; margin: .4rem 0; font-size: .9rem; }
 </style>
 </head>
 <body>
