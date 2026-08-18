@@ -126,6 +126,18 @@ class GmailNotifier:
         self._service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
+def build_gmail_service_from_info(info: dict):
+    """認可済みユーザーの情報（refresh token を含む dict）から Gmail クライアントを作る。
+
+    Cloud Run では Secret Manager の中身を環境変数で受けるので、ファイルにしない。
+    """
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    credentials = Credentials.from_authorized_user_info(info, scopes=[GMAIL_SEND_SCOPE])
+    return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+
+
 def build_gmail_service(credentials_file: Path | str):
     """送信専用アカウントの refresh token から Gmail クライアントを作る。
 

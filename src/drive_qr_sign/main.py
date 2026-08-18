@@ -13,11 +13,13 @@
     PUBLIC_ORIGIN      このサービスの URL（https://... 。リダイレクト URI の組み立てに使う）
     TSA_URL            省略すると freeTSA
     OAUTH_SCOPES       省略すると openid email
+    GMAIL_SENDER_JSON  署名の記録メールを送るアカウントの資格情報。無ければ送らない
 
 Drive は Cloud Run に紐づいたサービスアカウントで触るので、鍵ファイルは持たない。
 
-印影の登録（`/seal`）は無効。Cloud Run は再起動で消える器なので、
-置き場を持たせるまでは「名簿の文字から生成」だけにする。
+印影の登録（`/seal`）は無効。Cloud Run のファイルシステムは使い捨てで、
+インスタンスはいつ入れ替わってもおかしくない（起動しっぱなしにしても同じ）。
+置き場を Drive などに持たせるまでは「名簿の文字から生成」だけにする。
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import os
 from .drive import DriveDocumentStore, build_default_service
 from .google_identity import BASE_SCOPES, ClientSecrets, GoogleIdentityProvider
 from .identity import SignerDirectory, SignerEntry
+from .notify import GmailNotifier, build_gmail_service_from_info
 from .signing import FREE_TSA_URL, load_signer_from_pem
 from .web import create_app
 
@@ -62,6 +65,14 @@ def _identity_provider() -> GoogleIdentityProvider:
     )
 
 
+def _notifier():
+    """署名の記録メール。資格情報が無ければ送らない（導入組織が選ぶオプション）。"""
+    raw = os.environ.get("GMAIL_SENDER_JSON")
+    if not raw:
+        return None
+    return GmailNotifier(build_gmail_service_from_info(json.loads(raw)))
+
+
 def build() -> "object":
     store = DriveDocumentStore(build_default_service())
     return create_app(
@@ -77,8 +88,7 @@ def build() -> "object":
         can_read=store.can_read,
         # 印影の登録先が無いので、生成した丸印だけになる
         seal_store=None,
-        # 記録メールは送信専用アカウントを用意してから
-        notifier=None,
+        notifier=_notifier(),
     )
 
 
