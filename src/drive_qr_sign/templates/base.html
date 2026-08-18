@@ -60,7 +60,9 @@
     /* rem だけで上限を切ると、文字を大きくしている端末で画面幅を超える */
     max-width: min(48rem, 100%);
     background: var(--card);
-    padding: clamp(1.25rem, 4vw, 2.75rem);
+    /* 書類だけはこの余白を打ち消して横いっぱいに出すので、値を変数で持つ */
+    --pad: clamp(1.25rem, 4vw, 2.75rem);
+    padding: var(--pad);
     border: 1px solid var(--line);
     border-radius: clamp(0px, 2vw, 1rem);
   }
@@ -138,10 +140,12 @@
 
   /* 書類の中身。押す前に読めることが紙の代わりの最低条件 */
   .document { margin-top: 2.5rem; border-top: 1px solid var(--line); }
-  #document { margin-top: 1rem; }
+  /* 書類はカードの余白を打ち消して横いっぱいに出す。読むのが目的の場所なので、
+     紙の左右に額縁を作らない（スマホでは画面幅いっぱいになる） */
+  #document { margin: 1rem calc(-1 * var(--pad)) 0; }
   .page {
-    position: relative; display: block; width: 100%; margin: 1rem 0;
-    border: 1px solid var(--line); border-radius: .25rem; overflow: hidden;
+    position: relative; display: block; width: 100%; margin: 0 0 .75rem;
+    border-block: 1px solid var(--line); overflow: hidden;
     background: #fff;  /* 描き終わるまでの間も紙に見えるように */
   }
   .page canvas { display: block; }
