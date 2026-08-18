@@ -25,6 +25,13 @@ DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 PDF_MIME = "application/pdf"
 
 
+def service_account_email(credentials_file: Path | str) -> str:
+    """鍵ファイルからサービスアカウントのアドレスを読む。自分の共有を外すのに要る。"""
+    import json
+
+    return json.loads(Path(credentials_file).read_text(encoding="utf-8"))["client_email"]
+
+
 def build_service(credentials_file: Path | str):
     """サービスアカウントの鍵ファイルから Drive クライアントを作る。
 
@@ -78,6 +85,34 @@ class DriveDocumentStore:
             .execute()
         )
         return str(result.get("version") or result.get("id") or file_id)
+
+    def revoke_own_access(self, file_id: str, own_email: str) -> bool:
+        """この書類に対する自分（アプリ）の共有を外す。外せたら True。
+
+        回覧が終わった書類をサービスアカウントから見え続けさせないための操作。
+        乗っ取られたときに読まれる範囲を「いま回覧中のもの」に縮めるのが狙いで、
+        ここが共有期間を限る仕組みの実体になる。
+
+        外したあとアプリはその書類に触れなくなる（署名ページも開けなくなる）。
+        書類そのものは組織の Drive に残るので、Drive で普通に開けばよい。
+        """
+        try:
+            response = (
+                self._service.permissions()
+                .list(fileId=file_id, fields="permissions(id,emailAddress,type)")
+                .execute()
+            )
+        except Exception as exc:
+            raise DocumentNotFound(f"共有設定を読めない: {file_id}") from exc
+
+        wanted = own_email.strip().lower()
+        for permission in response.get("permissions", []):
+            if (permission.get("emailAddress") or "").strip().lower() == wanted:
+                self._service.permissions().delete(
+                    fileId=file_id, permissionId=permission["id"]
+                ).execute()
+                return True
+        return False
 
     def can_read(self, file_id: str, email: str) -> bool:
         """その人が Drive 上でこの書類を見られるか。

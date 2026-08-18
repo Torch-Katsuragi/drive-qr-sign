@@ -46,6 +46,12 @@ class FakePermissions:
             return FakeRequest(None, error=RuntimeError("404"))
         return FakeRequest({"permissions": self._drive.shares[fileId]})
 
+    def delete(self, fileId: str, permissionId: str):
+        self._drive.shares[fileId] = [
+            p for p in self._drive.shares[fileId] if p.get("id") != permissionId
+        ]
+        return FakeRequest({})
+
 
 class FakeDrive:
     """googleapiclient の Resource のうち、こちらが使う分だけを真似る。"""
@@ -68,10 +74,15 @@ def store():
         contents={"doc-1": b"%PDF-1.7 original"},
         shares={
             "doc-1": [
-                {"emailAddress": "Kumiaicho@example.test", "type": "user", "role": "writer"},
-                {"emailAddress": "app@project.iam.gserviceaccount.com", "type": "user", "role": "writer"},
+                {"id": "p1", "emailAddress": "Kumiaicho@example.test", "type": "user", "role": "writer"},
+                {
+                    "id": "p2",
+                    "emailAddress": "app@project.iam.gserviceaccount.com",
+                    "type": "user",
+                    "role": "writer",
+                },
             ],
-            "link-shared": [{"type": "anyone", "role": "reader"}],
+            "link-shared": [{"id": "p3", "type": "anyone", "role": "reader"}],
         },
     )
     return DriveDocumentStore(drive), drive
@@ -119,3 +130,26 @@ def test_link_shared_file_is_readable_by_anyone(store):
     """「リンクを知っている全員」を選んだのは組織なので、アプリは追認する。"""
     document_store, _ = store
     assert document_store.can_read("link-shared", "dare@example.test")
+
+
+APP = "app@project.iam.gserviceaccount.com"
+
+
+def test_revoking_own_access_ends_the_circulation(store):
+    """回覧が終わった書類をアプリから見えなくする。
+
+    乗っ取られたときに読まれる範囲を「いま回覧中のもの」に縮めるための操作。
+    """
+    document_store, drive = store
+
+    assert document_store.revoke_own_access("doc-1", APP) is True
+    assert all(p.get("emailAddress") != APP for p in drive.shares["doc-1"])
+    # 外したら自分では読めなくなる（他の共有相手はそのまま）
+    assert not document_store.can_read("doc-1", APP)
+    assert document_store.can_read("doc-1", "kumiaicho@example.test")
+
+
+def test_revoking_twice_is_harmless(store):
+    document_store, _ = store
+    assert document_store.revoke_own_access("doc-1", APP) is True
+    assert document_store.revoke_own_access("doc-1", APP) is False
