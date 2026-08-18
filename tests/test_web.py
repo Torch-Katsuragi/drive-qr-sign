@@ -762,35 +762,3 @@ def test_the_account_icon_appears_as_a_choice_when_there_is_one(fields_pdf: Path
     body = TestClient(app).get(_url()).text
     assert 'value="icon"' in body
     assert "アカウントのアイコン" in body
-
-
-def test_a_failed_write_back_is_not_swallowed(fields_pdf: Path, dev_cert, tmp_path: Path):
-    """書き戻しは画面を返したあとに走る。失敗したら、次の画面でそれを伝える。
-
-    押した人には「押せた」ように見えているので、黙って無かったことにしない。
-    """
-    store_dir = tmp_path / "store"
-    store_dir.mkdir()
-    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
-
-    class BrokenStore(LocalDocumentStore):
-        def store_signed(self, file_id: str, data: bytes) -> str:
-            raise RuntimeError("Drive が落ちている")
-
-    key, cert = dev_cert
-    app = create_app(
-        document_store=BrokenStore(store_dir),
-        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
-        identity_provider=FakeIdentityProvider("kumiaicho@example.test"),
-        signer=load_signer(key, cert),
-        qr_secret=SECRET,
-        tsa_url=None,
-    )
-    client = TestClient(app)
-    csrf = _extract_csrf(client.get(_url()).text)
-    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
-
-    body = client.get(_url()).text
-    assert "書き戻しに失敗しました" in body
-    # 手元の写しは捨てているので、画面は Drive の実物（未署名）に戻っている
-    assert "組合長として署名する" in body

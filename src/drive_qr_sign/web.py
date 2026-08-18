@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
-import threading
 import time
 import logging
 from pathlib import Path
@@ -57,7 +56,6 @@ logger = logging.getLogger(__name__)
 DOCUMENT_TTL = 600.0  # 書類の中身。使う前に必ず版番号で確かめるので、古いものを見せることはない
 VERIFIED_TTL = 10.0   # 版番号を確かめたばかり、とみなす時間（画面1枚ぶんの連続した要求をまとめる）
 ACCESS_TTL = 30.0     # Drive の共有設定
-TROUBLE_TTL = 300.0   # 書き戻しの失敗を画面で伝える猶予
 PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わらない）
 
 # 印影の種類。画面の選択肢と `_seal_source` の分岐で同じ名前を使う
@@ -100,9 +98,6 @@ def create_app(
 
     # 1回の画面表示のあいだ、同じ問い合わせを繰り返さないための覚え書き（cache.py）
     documents = TimedCache(DOCUMENT_TTL)
-    troubles = TimedCache(TROUBLE_TTL)
-    _writes: dict[str, threading.Lock] = {}
-    _writes_guard = threading.Lock()
     verified = TimedCache(VERIFIED_TTL)
     access = TimedCache(ACCESS_TTL)
     pictures = TimedCache(PICTURE_TTL)
@@ -204,41 +199,6 @@ def create_app(
         if remembered is None:
             remembered = access.put(key, bool(_can_read(file_id, email)))
         return remembered
-
-    def _writing(file_id: str) -> threading.Lock:
-        """その書類の書き戻しを1つずつにするための鍵。
-
-        書き戻しを画面の後ろに回した以上、前の書き戻しが終わる前に次の署名が
-        始まると、**まだ上がっていない版を土台にして押す**ことになる。
-        鍵は押す側で取り、書き戻し側（背後の処理）で放す。
-        """
-        with _writes_guard:
-            return _writes.setdefault(file_id, threading.Lock())
-
-    def _write_back(file_id: str, pdf: bytes, notice: SignatureNotice, lock: threading.Lock) -> None:
-        """画面を返したあとに、Drive へ書き戻して記録を送る。
-
-        ⚠ここで失敗したら、手元の写しを捨てて Drive の実物に戻す。画面に見えている
-        印影が Drive に無い、という食い違いを残さないため（次の表示で真実が出る）。
-        """
-        started = time.perf_counter()
-        try:
-            version = document_store.store_signed(file_id, pdf)
-            documents.put(file_id, (version, pdf))
-            logger.info(
-                "書き戻し: %s (%.0fms)", file_id, (time.perf_counter() - started) * 1000
-            )
-        except Exception:
-            documents.forget(file_id)
-            verified.forget(file_id)
-            # ⚠黙って消さない。押した人には「押せた」ように見えているので、
-            # 次に開いた画面で必ず伝える
-            troubles.put(file_id, "書き戻しに失敗しました。もう一度押してください。")
-            logger.exception("書き戻しに失敗した。手元の写しは捨てた: %s", file_id)
-            return
-        finally:
-            lock.release()
-        notify_quietly(notifier, notice)
 
     def _log_breakdown(what: str, marks: list[tuple[str, float]]) -> None:
         """どこで待っていたかを1行に残す。体感の重さは推測ではなくログで詰める。"""
@@ -397,8 +357,6 @@ def create_app(
                 "document_url": _web_url(file_id),
                 # 選べる印影。先頭が既定（_seal_source の落ちる順と同じ）
                 "seal_choices": _seal_choices(request, email) if email else [],
-                # 画面を返したあとの書き戻しが失敗していたら、ここで伝える
-                "trouble": troubles.get(file_id),
             },
         )
 
@@ -416,83 +374,71 @@ def create_app(
         # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
         # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
         marks = [("開始", time.perf_counter())]
-        # 前の書き戻しが終わるまで待つ。放すのは背後の書き戻し（_write_back）で、
-        # 途中で止まったらここで放す
-        lock = _writing(file_id)
-        lock.acquire()
-        handed_over = False
-        try:
-            pdf = _load(file_id, m, fresh=True)
-            marks.append(("書類の用意", time.perf_counter()))
+        pdf = _load(file_id, m, fresh=True)
+        marks.append(("書類の用意", time.perf_counter()))
 
-            email = identity_provider.verified_email(request)
-            if not email:
-                raise HTTPException(status_code=401, detail="ログインが必要です")
-            if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
-                raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-            mode, role, _ = _situation(pdf, email, file_id)
-            if mode == MODE_STRANGER:
-                raise HTTPException(
-                    status_code=403, detail="この書類に署名できるアカウントではありません"
-                )
-            if mode not in SIGNABLE:
-                raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
+        mode, role, _ = _situation(pdf, email, file_id)
+        if mode == MODE_STRANGER:
+            raise HTTPException(status_code=403, detail="この書類に署名できるアカウントではありません")
+        if mode not in SIGNABLE:
+            raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
 
-            uploaded = seal_image.file.read() if seal_image is not None else None
-            if uploaded:
-                try:
-                    prepare_uploaded(uploaded)  # 押す前に検疫を通す
-                except UnusableImage as exc:
-                    raise HTTPException(status_code=400, detail=str(exc))
+        uploaded = seal_image.file.read() if seal_image is not None else None
+        if uploaded:
+            try:
+                prepare_uploaded(uploaded)  # 押す前に検疫を通す
+            except UnusableImage as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
-            signed = io.BytesIO()
-            if mode == MODE_ROLE_READY:
-                sign_field(
-                    io.BytesIO(pdf),
-                    signed,
-                    field_name=role,
-                    signer=signer,
-                    tsa_url=tsa_url,
-                    signer_name=email,
-                    reason=f"{role}として承認",
-                    seal=_stamp_for(request, email, uploaded, seal_choice),
-                )
-            else:
-                sign_invisible(
-                    io.BytesIO(pdf),
-                    signed,
-                    field_name=silent_field_name(email),
-                    signer=signer,
-                    tsa_url=tsa_url,
-                    signer_name=email,
-                    reason="確認",
-                )
-            signed_pdf = signed.getvalue()
-            marks.append(("署名（TSA込み）", time.perf_counter()))
-
-            # 署名はもうできている。押した人に見せるものは手元にあるので、
-            # Drive への書き戻しと記録メールは画面を返したあとに回す
-            documents.put(file_id, (None, signed_pdf))  # 版はまだ確定していない
-            verified.put(file_id, True)
-            background.add_task(
-                _write_back,
-                file_id,
-                signed_pdf,
-                SignatureNotice.create(
-                    file_id=file_id,
-                    signer_email=email,
-                    role=role if mode == MODE_ROLE_READY else None,
-                    signed_pdf=signed_pdf,
-                ),
-                lock,
+        signed = io.BytesIO()
+        if mode == MODE_ROLE_READY:
+            sign_field(
+                io.BytesIO(pdf),
+                signed,
+                field_name=role,
+                signer=signer,
+                tsa_url=tsa_url,
+                signer_name=email,
+                reason=f"{role}として承認",
+                seal=_stamp_for(request, email, uploaded, seal_choice),
             )
-            handed_over = True
-        finally:
-            if not handed_over:
-                lock.release()
-
+        else:
+            sign_invisible(
+                io.BytesIO(pdf),
+                signed,
+                field_name=silent_field_name(email),
+                signer=signer,
+                tsa_url=tsa_url,
+                signer_name=email,
+                reason="確認",
+            )
+        signed_pdf = signed.getvalue()
+        marks.append(("署名（TSA込み）", time.perf_counter()))
+        # 書き戻して返る版を覚えておく。直後の画面も、次の署名も、これで足りる
+        documents.put(file_id, (document_store.store_signed(file_id, signed_pdf), signed_pdf))
+        verified.put(file_id, True)
+        marks.append(("書き戻し", time.perf_counter()))
         _log_breakdown("署名", marks)
+
+        # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
+        # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む。
+        # ⚠画面を返したあとに送る。Gmail の応答を待つあいだ、押した人を待たせない
+        background.add_task(
+            notify_quietly,
+            notifier,
+            SignatureNotice.create(
+                file_id=file_id,
+                signer_email=email,
+                role=role if mode == MODE_ROLE_READY else None,
+                signed_pdf=signed_pdf,
+            ),
+        )
 
         return _back_to_sign_page(file_id, m)
 
@@ -505,56 +451,41 @@ def create_app(
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
         その署名が自分のものを含めて覆っているので、抜くと相手のものが壊れる。
         """
-        marks = [("開始", time.perf_counter())]
-        lock = _writing(file_id)
-        lock.acquire()
-        handed_over = False
-        try:
-            pdf = _load(file_id, m, fresh=True)
-            marks.append(("書類の用意", time.perf_counter()))
+        pdf = _load(file_id, m, fresh=True)
 
-            email = identity_provider.verified_email(request)
-            if not email:
-                raise HTTPException(status_code=401, detail="ログインが必要です")
-            if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
-                raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-            field = _revocable_field(pdf, email)
-            if field is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="取り消せません。あなたの後に誰かが署名しているか、署名がありません",
-                )
-
-            try:
-                reverted = revoke_last_signature(pdf, expect_signer=email)
-            except NotRevocable as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
-            marks.append(("取り消し", time.perf_counter()))
-
-            documents.put(file_id, (None, reverted))
-            verified.put(file_id, True)
-            # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
-            # 送ったメールは消せないので、事実の側を揃える
-            background.add_task(
-                _write_back,
-                file_id,
-                reverted,
-                SignatureNotice.create(
-                    file_id=file_id,
-                    signer_email=email,
-                    role=None if field.startswith("silent-") else field,
-                    signed_pdf=reverted,
-                    revoked=True,
-                ),
-                lock,
+        field = _revocable_field(pdf, email)
+        if field is None:
+            raise HTTPException(
+                status_code=409,
+                detail="取り消せません。あなたの後に誰かが署名しているか、署名がありません",
             )
-            handed_over = True
-        finally:
-            if not handed_over:
-                lock.release()
 
-        _log_breakdown("取り消し", marks)
+        try:
+            reverted = revoke_last_signature(pdf, expect_signer=email)
+        except NotRevocable as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+        documents.put(file_id, (document_store.store_signed(file_id, reverted), reverted))
+        verified.put(file_id, True)
+        # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
+        # 送ったメールは消せないので、事実の側を揃える
+        background.add_task(
+            notify_quietly,
+            notifier,
+            SignatureNotice.create(
+                file_id=file_id,
+                signer_email=email,
+                role=None if field.startswith("silent-") else field,
+                signed_pdf=reverted,
+                revoked=True,
+            ),
+        )
 
         return _back_to_sign_page(file_id, m)
 
