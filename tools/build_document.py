@@ -1,6 +1,8 @@
 """QR を焼き込んだ書類を作り、Drive に置く。
 
-    python tools/build_document.py [--upload]
+    python tools/build_document.py [<書類.typ>] [--name "書類の名前"] [--upload]
+
+書類を省略すると、同梱のサンプル（tools/sample_doc.typ）を使う。
 
 やっていること:
 
@@ -40,7 +42,18 @@ def reserve_file_id(service) -> str:
 
 
 def main(argv: list[str]) -> int:
-    upload = "--upload" in argv
+    import argparse
+
+    parser = argparse.ArgumentParser(description="QR を焼き込んだ書類を作る")
+    parser.add_argument("source", nargs="?", default=str(SOURCE), help="Typst の書類（省略時はサンプル）")
+    parser.add_argument("--name", default=None, help="Drive に置くときのファイル名")
+    parser.add_argument("--upload", action="store_true", help="Drive に置く（省略時は手元に作るだけ）")
+    args = parser.parse_args(argv)
+
+    source = Path(args.source).resolve()
+    if not source.is_file():
+        raise SystemExit(f"書類が無い: {source}")
+    upload = args.upload
     OUT_DIR.mkdir(exist_ok=True)
 
     config = json.loads((SECRETS / "dev-drive.json").read_text(encoding="utf-8"))
@@ -60,10 +73,10 @@ def main(argv: list[str]) -> int:
     # ⚠Typst に渡すパスにバックスラッシュは使えない。root からの相対にして区切りも / にする
     inputs = {"qr": "/" + qr_png.relative_to(REPO_ROOT).as_posix()}
     plain = OUT_DIR / "document.pdf"
-    typst.compile(str(SOURCE), output=str(plain), root=str(REPO_ROOT), sys_inputs=inputs)
+    typst.compile(str(source), output=str(plain), root=str(REPO_ROOT), sys_inputs=inputs)
 
     heights = page_heights(plain)
-    placements = anchors_to_placements(query_anchors(SOURCE, root=REPO_ROOT, inputs=inputs), heights)
+    placements = anchors_to_placements(query_anchors(source, root=REPO_ROOT, inputs=inputs), heights)
     ready = OUT_DIR / "document-ready.pdf"
     add_signature_fields(plain, ready, placements)
 
@@ -75,7 +88,7 @@ def main(argv: list[str]) -> int:
 
         media = MediaIoBaseUpload(io.BytesIO(Path(ready).read_bytes()), mimetype="application/pdf")
         service.files().create(
-            body={"id": file_id, "name": "drive-qr-sign_QR入り_支出調書サンプル.pdf"},
+            body={"id": file_id, "name": args.name or f"{source.stem}.pdf"},
             media_body=media,
             fields="id",
         ).execute()
