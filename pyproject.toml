@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "drive-qr-sign"
 version = "0.0.1"
 description = "Google Drive 上の PDF に、紙に刷った QR から PAdES 電子署名を付けるワークフロー"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Katsuaki Matsumoto" }]
 
@@ -15,6 +15,9 @@ dependencies = [
     "pyhanko>=0.36",
     "pyhanko-certvalidator>=0.31",
     "requests>=2.31",
+    # 印影の生成と、持ち込まれた画像の描き直し（seal.py）。
+    # pyHanko 経由で入ることに頼っていたが、直接使う以上ここに書く
+    "pillow>=10",
     # 署名ページ（web層）
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
