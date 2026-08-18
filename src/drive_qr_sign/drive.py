@@ -78,16 +78,20 @@ class DriveDocumentStore:
         """
         return f"https://drive.google.com/file/d/{file_id}/view"
 
-    def version(self, file_id: str) -> str | None:
-        """いまの版番号。中身を落とさずに「変わっていないか」を確かめるために使う。
+    def content_hash(self, file_id: str) -> str | None:
+        """いま Drive にある中身の MD5。落とさずに「同じ中身か」を確かめるために使う。
 
         本体のダウンロードは1MB級で1秒前後かかるが、これは数百バイトで済む。
+
+        ⚠版番号ではなく**中身**で見る。版番号は「いつ読んだか」との対応が取れず、
+        読んだ直後に他の人が書き戻すと、古い中身に新しい版番号が付いてしまう
+        （それで上書き事故が起きるところだった。テストで露見）。
         """
         try:
-            result = self._service.files().get(fileId=file_id, fields="version").execute()
+            result = self._service.files().get(fileId=file_id, fields="md5Checksum").execute()
         except Exception:
             return None  # 分からなければ「変わったかもしれない」として扱わせる
-        return str(result.get("version")) if result.get("version") else None
+        return result.get("md5Checksum")
 
     def store_signed(self, file_id: str, data: bytes) -> str:
         """署名済みを原本の新しい版として書き戻す。

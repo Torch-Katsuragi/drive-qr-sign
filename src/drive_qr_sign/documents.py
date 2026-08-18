@@ -22,8 +22,8 @@ class DocumentStore(Protocol):
     def store_signed(self, file_id: str, data: bytes) -> str:
         """署名済み PDF を書き戻し、その版を表す文字列を返す。"""
 
-    def version(self, file_id: str) -> str | None:
-        """いまの版。中身を落とさずに「変わっていないか」を確かめるためのもの。
+    def content_hash(self, file_id: str) -> str | None:
+        """いまの中身のハッシュ。落とさずに「同じ中身か」を確かめるためのもの。
 
         省略可（実装が無ければ、毎回そのまま取りに行くだけ）。
         """
@@ -64,12 +64,13 @@ class LocalDocumentStore:
         self._check(file_id)
         out = self.root / f"{file_id}.signed.pdf"
         out.write_bytes(data)
-        return self.version(file_id) or out.name
+        return out.name
 
-    def version(self, file_id: str) -> str | None:
+    def content_hash(self, file_id: str) -> str | None:
+        import hashlib
+
         self._check(file_id)
         for path in (self.root / f"{file_id}.signed.pdf", self.root / f"{file_id}.pdf"):
             if path.is_file():
-                stat = path.stat()
-                return f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}"
+                return hashlib.md5(path.read_bytes()).hexdigest()
         return None

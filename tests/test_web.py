@@ -50,8 +50,8 @@ class CountingStore:
     def store_signed(self, file_id: str, pdf: bytes):
         return self.inner.store_signed(file_id, pdf)
 
-    def version(self, file_id: str):
-        return self.inner.version(file_id)
+    def content_hash(self, file_id: str):
+        return self.inner.content_hash(file_id)
 
 
 @pytest.fixture
@@ -762,3 +762,64 @@ def test_the_account_icon_appears_as_a_choice_when_there_is_one(fields_pdf: Path
     body = TestClient(app).get(_url()).text
     assert 'value="icon"' in body
     assert "アカウントのアイコン" in body
+
+
+def test_a_signature_that_lands_mid_flight_is_not_overwritten(
+    fields_pdf: Path, dev_cert, tmp_path: Path
+):
+    """署名しているあいだに別の人が押していたら、その版で上書きしない。
+
+    Drive には「この版のときだけ書き換える」条件付き更新が無いので、
+    書き戻す直前にもう一度版を確かめる。⚠隙間が完全に消えるわけではない
+    （鍵と `--max-instances=1` と併せて初めて塞がる）。
+    """
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    key, cert = dev_cert
+
+    class RacingStore(LocalDocumentStore):
+        """署名しているあいだに、別の人の署名が入ってくる倉庫。
+
+        割り込みは**土台を読んだ後・書き戻す前**に起こす。そこが塞ぎたい隙間で、
+        読む前に割り込まれた場合は、新しい土台の上で署名し直せばよいだけ。
+        """
+
+        def __init__(self, root):
+            super().__init__(root)
+            self.hash_calls = 0
+
+        def content_hash(self, file_id: str):
+            self.hash_calls += 1
+            if self.hash_calls == 2:  # 書き戻す直前の確認
+                signed = io.BytesIO()
+                sign_field(
+                    io.BytesIO(super().fetch(file_id)),
+                    signed,
+                    field_name="担当",
+                    signer=load_signer(key, cert),
+                    tsa_url=None,
+                    signer_name="soumu@example.test",
+                )
+                super().store_signed(file_id, signed.getvalue())
+            return super().content_hash(file_id)
+
+    store = RacingStore(store_dir)
+    app = create_app(
+        document_store=store,
+        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
+        identity_provider=FakeIdentityProvider("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    client = TestClient(app)
+    csrf = _extract_csrf(client.get(_url()).text)
+
+    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert response.status_code == 409
+    assert "もう一度押してください" in response.text
+    # 割り込んだ側の署名は残っている（消されていない）
+    assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["担当"]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import threading
 import io
 import time
 import logging
@@ -98,6 +99,9 @@ def create_app(
 
     # 1回の画面表示のあいだ、同じ問い合わせを繰り返さないための覚え書き（cache.py）
     documents = TimedCache(DOCUMENT_TTL)
+    # 書類ごとの鍵。読んで→署名して→書き戻す、のあいだに割り込ませない
+    writes: dict[str, threading.Lock] = {}
+    writes_guard = threading.Lock()
     verified = TimedCache(VERIFIED_TTL)
     access = TimedCache(ACCESS_TTL)
     pictures = TimedCache(PICTURE_TTL)
@@ -222,10 +226,43 @@ def create_app(
         source = getattr(document_store, "web_url", None)
         return source(file_id) if source else None
 
-    def _version(file_id: str) -> str | None:
-        """倉庫が持っている版。分からない倉庫なら None。"""
-        source = getattr(document_store, "version", None)
+    def _stored_hash(file_id: str) -> str | None:
+        """いま倉庫にある中身のハッシュ。分からない倉庫なら None。"""
+        source = getattr(document_store, "content_hash", None)
         return source(file_id) if source else None
+
+    def _hash(pdf: bytes) -> str:
+        """手元の中身のハッシュ。倉庫に問い合わせずに出せる（Drive の md5Checksum と同じ）。"""
+        return hashlib.md5(pdf).hexdigest()
+
+    def _writing(file_id: str) -> threading.Lock:
+        """その書類を書き換えるための鍵。
+
+        ⚠これはこのプロセスの中でしか効かない。Cloud Run のインスタンスが増えると
+        別プロセスになるので、`--max-instances=1` と併せて初めて意味を持つ。
+        インスタンスが並ぶのはデプロイの入れ替わりの一瞬だけで、そこは書き戻す
+        直前の突き合わせ（`_store_if_unchanged`）で受ける。
+        """
+        with writes_guard:
+            return writes.setdefault(file_id, threading.Lock())
+
+    def _store_if_unchanged(file_id: str, pdf: bytes, base_hash: str) -> str:
+        """土台が入れ替わっていないことを確かめてから書き戻す。
+
+        ⚠Drive には「この中身のときだけ書き換える」条件付き更新が無い。だから
+        **確かめてから書く**しかなく、隙間は完全には消えない。隙間を
+        「署名まるごと（数秒）」から「確認から書き戻しまで」に縮めるのが目的。
+
+        ⚠見るのは版番号ではなく**中身**。版番号は「いつ読んだか」との対応が取れず、
+        読んだ直後に他の人が書き戻すと、古い中身に新しい版番号が付く（テストで露見）。
+        """
+        stored = _stored_hash(file_id)
+        if stored is not None and stored != base_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="ほかの人の署名と重なりました。もう一度押してください",
+            )
+        return document_store.store_signed(file_id, pdf)
 
     def _load(file_id: str, mac: str, *, fresh: bool = False) -> bytes:
         """書類の中身。読むだけなら少しのあいだ使い回す。
@@ -244,13 +281,13 @@ def create_app(
 
         remembered = documents.get(file_id)
         if remembered is not None:
-            version, pdf = remembered
+            content_hash, pdf = remembered
             # 画面1枚ぶんの連続した要求（ページ→PDF本体）は、確かめ直さない
             if not fresh and verified.get(file_id):
                 return pdf
-            if version is not None and version == _version(file_id):
+            if content_hash == _stored_hash(file_id):
                 verified.put(file_id, True)
-                return pdf  # 手元のもので最新だった
+                return pdf  # 手元のものと同じ中身だった
 
         started = time.perf_counter()
         try:
@@ -258,7 +295,7 @@ def create_app(
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail="書類が見つかりません")
         logger.info("Drive から取得: %s (%.0fms)", file_id, (time.perf_counter() - started) * 1000)
-        documents.put(file_id, (_version(file_id), pdf))
+        documents.put(file_id, (_hash(pdf), pdf))
         verified.put(file_id, True)
         return pdf
 
@@ -382,61 +419,70 @@ def create_app(
         # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
         # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
         marks = [("開始", time.perf_counter())]
-        pdf = _load(file_id, m, fresh=True)
-        marks.append(("書類の用意", time.perf_counter()))
+        # 読んで→署名して→書き戻す、のあいだに他の署名を割り込ませない。
+        # 割り込まれると、割り込んだ側の署名を含まない版で上書きしてしまう
+        with _writing(file_id):
+            pdf = _load(file_id, m, fresh=True)
+            # 署名の土台にした中身そのもののハッシュ。書き戻す直前に突き合わせる
+            base_hash = _hash(pdf)
+            marks.append(("書類の用意", time.perf_counter()))
 
-        email = identity_provider.verified_email(request)
-        if not email:
-            raise HTTPException(status_code=401, detail="ログインが必要です")
-        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
-            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+            email = identity_provider.verified_email(request)
+            if not email:
+                raise HTTPException(status_code=401, detail="ログインが必要です")
+            if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+                raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-        mode, role, _ = _situation(pdf, email, file_id)
-        if mode == MODE_STRANGER:
-            raise HTTPException(status_code=403, detail="この書類に署名できるアカウントではありません")
-        if mode not in SIGNABLE:
-            raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
+            mode, role, _ = _situation(pdf, email, file_id)
+            if mode == MODE_STRANGER:
+                raise HTTPException(
+                    status_code=403, detail="この書類に署名できるアカウントではありません"
+                )
+            if mode not in SIGNABLE:
+                raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
 
-        uploaded = seal_image.file.read() if seal_image is not None else None
-        if uploaded:
-            try:
-                prepare_uploaded(uploaded)  # 押す前に検疫を通す
-            except UnusableImage as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+            uploaded = seal_image.file.read() if seal_image is not None else None
+            if uploaded:
+                try:
+                    prepare_uploaded(uploaded)  # 押す前に検疫を通す
+                except UnusableImage as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
 
-        signed = io.BytesIO()
-        if mode == MODE_ROLE_READY:
-            sign_field(
-                io.BytesIO(pdf),
-                signed,
-                field_name=role,
-                signer=signer,
-                tsa_url=tsa_url,
-                signer_name=email,
-                reason=f"{role}として承認",
-                seal=_stamp_for(request, email, uploaded, seal_choice),
-            )
-        else:
-            sign_invisible(
-                io.BytesIO(pdf),
-                signed,
-                field_name=silent_field_name(email),
-                signer=signer,
-                tsa_url=tsa_url,
-                signer_name=email,
-                reason="確認",
-            )
-        signed_pdf = signed.getvalue()
-        marks.append(("署名（TSA込み）", time.perf_counter()))
-        # 書き戻して返る版を覚えておく。直後の画面も、次の署名も、これで足りる
-        documents.put(file_id, (document_store.store_signed(file_id, signed_pdf), signed_pdf))
-        verified.put(file_id, True)
-        marks.append(("書き戻し", time.perf_counter()))
+            signed = io.BytesIO()
+            if mode == MODE_ROLE_READY:
+                sign_field(
+                    io.BytesIO(pdf),
+                    signed,
+                    field_name=role,
+                    signer=signer,
+                    tsa_url=tsa_url,
+                    signer_name=email,
+                    reason=f"{role}として承認",
+                    seal=_stamp_for(request, email, uploaded, seal_choice),
+                )
+            else:
+                sign_invisible(
+                    io.BytesIO(pdf),
+                    signed,
+                    field_name=silent_field_name(email),
+                    signer=signer,
+                    tsa_url=tsa_url,
+                    signer_name=email,
+                    reason="確認",
+                )
+            signed_pdf = signed.getvalue()
+            marks.append(("署名（TSA込み）", time.perf_counter()))
+
+            _store_if_unchanged(file_id, signed_pdf, base_hash)
+            documents.put(file_id, (_hash(signed_pdf), signed_pdf))
+            verified.put(file_id, True)
+            marks.append(("書き戻し", time.perf_counter()))
+
         _log_breakdown("署名", marks)
 
         # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
         # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む。
-        # ⚠画面を返したあとに送る。Gmail の応答を待つあいだ、押した人を待たせない
+        # ⚠画面を返したあとに送る。応答を待つあいだ、押した人を待たせない
         background.add_task(
             notify_quietly,
             notifier,
@@ -460,31 +506,36 @@ def create_app(
         その署名が自分のものを含めて覆っているので、抜くと相手のものが壊れる。
         """
         marks = [("開始", time.perf_counter())]
-        pdf = _load(file_id, m, fresh=True)
-        marks.append(("書類の用意", time.perf_counter()))
+        with _writing(file_id):
+            pdf = _load(file_id, m, fresh=True)
+            base_hash = _hash(pdf)
+            marks.append(("書類の用意", time.perf_counter()))
 
-        email = identity_provider.verified_email(request)
-        if not email:
-            raise HTTPException(status_code=401, detail="ログインが必要です")
-        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
-            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+            email = identity_provider.verified_email(request)
+            if not email:
+                raise HTTPException(status_code=401, detail="ログインが必要です")
+            if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+                raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-        field = _revocable_field(pdf, email)
-        if field is None:
-            raise HTTPException(
-                status_code=409,
-                detail="取り消せません。あなたの後に誰かが署名しているか、署名がありません",
-            )
+            field = _revocable_field(pdf, email)
+            if field is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="取り消せません。あなたの後に誰かが署名しているか、署名がありません",
+                )
 
-        try:
-            reverted = revoke_last_signature(pdf, expect_signer=email)
-        except NotRevocable as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            try:
+                reverted = revoke_last_signature(pdf, expect_signer=email)
+            except NotRevocable as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
 
-        documents.put(file_id, (document_store.store_signed(file_id, reverted), reverted))
-        verified.put(file_id, True)
-        marks.append(("書き戻し", time.perf_counter()))
+            _store_if_unchanged(file_id, reverted, base_hash)
+            documents.put(file_id, (_hash(reverted), reverted))
+            verified.put(file_id, True)
+            marks.append(("書き戻し", time.perf_counter()))
+
         _log_breakdown("取り消し", marks)
+
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
         background.add_task(
