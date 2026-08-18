@@ -70,6 +70,17 @@ class DriveDocumentStore:
             # 存在の有無を問い合わせ元に教えない
             raise DocumentNotFound(f"取得できない: {file_id}") from exc
 
+    def version(self, file_id: str) -> str | None:
+        """いまの版番号。中身を落とさずに「変わっていないか」を確かめるために使う。
+
+        本体のダウンロードは1MB級で1秒前後かかるが、これは数百バイトで済む。
+        """
+        try:
+            result = self._service.files().get(fileId=file_id, fields="version").execute()
+        except Exception:
+            return None  # 分からなければ「変わったかもしれない」として扱わせる
+        return str(result.get("version")) if result.get("version") else None
+
     def store_signed(self, file_id: str, data: bytes) -> str:
         """署名済みを原本の新しい版として書き戻す。
 

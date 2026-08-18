@@ -20,7 +20,13 @@ class DocumentStore(Protocol):
         """署名対象の PDF を丸ごと取ってくる。"""
 
     def store_signed(self, file_id: str, data: bytes) -> str:
-        """署名済み PDF を書き戻し、その参照（file id 等）を返す。"""
+        """署名済み PDF を書き戻し、その版を表す文字列を返す。"""
+
+    def version(self, file_id: str) -> str | None:
+        """いまの版。中身を落とさずに「変わっていないか」を確かめるためのもの。
+
+        省略可（実装が無ければ、毎回そのまま取りに行くだけ）。
+        """
 
 
 class LocalDocumentStore:
@@ -55,4 +61,12 @@ class LocalDocumentStore:
         self._check(file_id)
         out = self.root / f"{file_id}.signed.pdf"
         out.write_bytes(data)
-        return out.name
+        return self.version(file_id) or out.name
+
+    def version(self, file_id: str) -> str | None:
+        self._check(file_id)
+        for path in (self.root / f"{file_id}.signed.pdf", self.root / f"{file_id}.pdf"):
+            if path.is_file():
+                stat = path.stat()
+                return f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}"
+        return None

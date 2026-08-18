@@ -21,7 +21,7 @@ import io
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -165,11 +165,19 @@ def create_app(
             remembered = access.put(key, bool(_can_read(file_id, email)))
         return remembered
 
+    def _version(file_id: str) -> str | None:
+        """倉庫が持っている版。分からない倉庫なら None。"""
+        source = getattr(document_store, "version", None)
+        return source(file_id) if source else None
+
     def _load(file_id: str, mac: str, *, fresh: bool = False) -> bytes:
         """書類の中身。読むだけなら少しのあいだ使い回す。
 
-        ⚠署名・取り消しでは必ず `fresh=True`。古い版を土台に署名すると、
-        あいだに押された人の署名ごと消した版を書き戻すことになる。
+        ⚠署名・取り消しでは `fresh=True`。古い版を土台に署名すると、あいだに
+        押された人の署名ごと消した版を書き戻すことになる。ただし「最新である」ことを
+        確かめる方法は2つある——**丸ごと落とし直す**（1MB・1秒前後）か、
+        **版番号だけ問い合わせる**（数百バイト）か。手元の版が最新だと分かれば、
+        落とし直す必要はない。
         """
         try:
             verify_mac(qr_secret, file_id, mac)
@@ -177,14 +185,20 @@ def create_app(
             # 偽造 QR。どこが違うかは教えない
             raise HTTPException(status_code=403, detail="この URL は無効です")
 
-        if not fresh:
-            remembered = documents.get(file_id)
-            if remembered is not None:
-                return remembered
+        remembered = documents.get(file_id)
+        if remembered is not None:
+            version, pdf = remembered
+            if not fresh:
+                return pdf
+            if version is not None and version == _version(file_id):
+                return pdf  # 手元のもので最新だった
+
         try:
-            return documents.put(file_id, document_store.fetch(file_id))
+            pdf = document_store.fetch(file_id)
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail="書類が見つかりません")
+        documents.put(file_id, (_version(file_id), pdf))
+        return pdf
 
     def _situation(
         pdf: bytes, email: str | None, file_id: str
@@ -291,6 +305,7 @@ def create_app(
     @app.post("/s/{file_id}/sign")
     def do_sign(
         request: Request,
+        background: BackgroundTasks,
         file_id: str,
         m: str = "",
         csrf: str = Form(""),
@@ -343,12 +358,14 @@ def create_app(
                 reason="確認",
             )
         signed_pdf = signed.getvalue()
-        document_store.store_signed(file_id, signed_pdf)
-        documents.put(file_id, signed_pdf)  # 直後の画面はこれを見る
+        # 書き戻して返る版を覚えておく。直後の画面も、次の署名も、これで足りる
+        documents.put(file_id, (document_store.store_signed(file_id, signed_pdf), signed_pdf))
 
         # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
-        # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む
-        notify_quietly(
+        # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む。
+        # ⚠画面を返したあとに送る。Gmail の応答を待つあいだ、押した人を待たせない
+        background.add_task(
+            notify_quietly,
             notifier,
             SignatureNotice.create(
                 file_id=file_id,
@@ -361,7 +378,9 @@ def create_app(
         return _back_to_sign_page(file_id, m)
 
     @app.post("/s/{file_id}/revoke")
-    def do_revoke(request: Request, file_id: str, m: str = "", csrf: str = Form("")) -> RedirectResponse:
+    def do_revoke(
+        request: Request, background: BackgroundTasks, file_id: str, m: str = "", csrf: str = Form("")
+    ) -> RedirectResponse:
         """押し間違えたときに、自分の署名を外す。
 
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
@@ -387,11 +406,11 @@ def create_app(
         except NotRevocable as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
-        document_store.store_signed(file_id, reverted)
-        documents.put(file_id, reverted)
+        documents.put(file_id, (document_store.store_signed(file_id, reverted), reverted))
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
-        notify_quietly(
+        background.add_task(
+            notify_quietly,
             notifier,
             SignatureNotice.create(
                 file_id=file_id,

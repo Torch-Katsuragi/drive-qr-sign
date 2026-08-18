@@ -50,6 +50,9 @@ class CountingStore:
     def store_signed(self, file_id: str, pdf: bytes):
         return self.inner.store_signed(file_id, pdf)
 
+    def version(self, file_id: str):
+        return self.inner.version(file_id)
+
 
 @pytest.fixture
 def env(fields_pdf: Path, dev_cert, tmp_path: Path):
@@ -557,3 +560,48 @@ def test_signing_never_builds_on_a_remembered_copy(env, dev_cert):
     assert sorted(list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True)) == sorted(
         ["組合長", "担当"]
     )
+
+
+def test_signing_does_not_download_what_it_already_has(env):
+    """画面を見てそのまま押したとき、書類を取りに行くのは1回だけ。
+
+    「最新である」ことは版番号を聞けば分かる（数百バイト）。同じものを
+    もう一度丸ごと落とす（1MB・1秒前後）必要はない。
+    """
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)
+
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert client.store.fetches == 1
+
+
+def test_the_record_is_still_sent_when_the_answer_comes_first(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """記録メールは画面を返したあとに送る。「あとで」にしたせいで送られない、を防ぐ。"""
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    sent = []
+
+    class RecordingNotifier:
+        def notify(self, notice):
+            sent.append(notice)
+
+    key, cert = dev_cert
+    identity = FakeIdentityProvider("kumiaicho@example.test")
+    app = create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
+        identity_provider=identity,
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+        notifier=RecordingNotifier(),
+    )
+    client = TestClient(app)
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert [notice.signer_email for notice in sent] == ["kumiaicho@example.test"]
