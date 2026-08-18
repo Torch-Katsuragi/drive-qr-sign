@@ -58,6 +58,11 @@ VERIFIED_TTL = 10.0   # 版番号を確かめたばかり、とみなす時間�
 ACCESS_TTL = 30.0     # Drive の共有設定
 PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わらない）
 
+# 印影の種類。画面の選択肢と `_seal_source` の分岐で同じ名前を使う
+SEAL_REGISTERED = "registered"  # 名簿に組織が指定した画像
+SEAL_ICON = "icon"              # Google アカウントのアイコン
+SEAL_GENERATED = "generated"    # 名簿の文字から生成した丸印
+
 MODE_LOGIN = "login"  # 未ログイン
 MODE_STRANGER = "stranger"  # この書類を見る権限が無い
 MODE_ROLE_READY = "role_ready"  # 押印枠が空いている
@@ -112,8 +117,32 @@ def create_app(
     if login_routes is not None:
         app.include_router(login_routes)
 
-    def _seal_source(request: Request, email: str, uploaded: bytes | None):
+    def _account_icon(request: Request, email: str):
+        """Google アカウントのアイコン。取れなければ None。"""
+        picture = _google_picture(request)
+        if not picture:
+            return None
+        try:
+            raw = pictures.get(picture) or pictures.put(picture, _fetch_picture(picture))
+            return prepare_uploaded(raw)
+        except Exception:
+            logger.exception("アイコンを取れなかった: %s", email)
+            return None
+
+    def _seal_choices(request: Request, email: str) -> list[str]:
+        """この人が選べる印影の種類。並び順がそのまま既定の優先順になる。"""
+        choices = []
+        if signer_directory.seal_image_for(email) is not None:
+            choices.append(SEAL_REGISTERED)
+        if _google_picture(request):
+            choices.append(SEAL_ICON)
+        choices.append(SEAL_GENERATED)
+        return choices
+
+    def _seal_source(request: Request, email: str, uploaded: bytes | None, choice: str = ""):
         """印影の元になる絵を決める。
+
+        選ばれたものがあればそれを使い、無ければ上から順に落ちる。
 
         1. その場でアップロードされた画像（この署名かぎり。保管しない）
         2. 名簿に組織が指定した画像
@@ -126,28 +155,29 @@ def create_app(
         seal = None
         if uploaded:
             seal = prepare_uploaded(uploaded)
-        if seal is None:
+        # 選ばれたものだけを作る。選ばれていなければ従来どおり上から落ちる
+        if seal is None and choice == SEAL_GENERATED:
+            pass  # 下の生成に落ちる
+        elif seal is None and choice == SEAL_ICON:
+            seal = _account_icon(request, email)
+        elif seal is None and choice == SEAL_REGISTERED:
             seal = signer_directory.seal_image_for(email)
-        if seal is None:
-            picture = _google_picture(request)
-            if picture:
-                try:
-                    raw = pictures.get(picture) or pictures.put(picture, _fetch_picture(picture))
-                    seal = prepare_uploaded(raw)
-                except Exception:
-                    logger.exception("アイコンを取れなかった: %s", email)
+        elif seal is None:
+            seal = signer_directory.seal_image_for(email)
+            if seal is None:
+                seal = _account_icon(request, email)
         if seal is None:
             # アイコンが無い（profile を要求していない・設定していない）人。
             # 名簿の文字、無ければアドレスの頭文字で最低限の見た目を作る
             seal = render_seal(signer_directory.seal_text_for(email) or email.strip()[:1].upper() or "?")
         return seal
 
-    def _stamp_for(request: Request, email: str, uploaded: bytes | None):
+    def _stamp_for(request: Request, email: str, uploaded: bytes | None, choice: str = ""):
         """押印枠に押す絵。元の絵の上にメールアドレスを添えて返す。
 
         アイコンや写真は紙の上で誰の印か分からないため（seal.compose_stamp）。
         """
-        return compose_stamp(_seal_source(request, email, uploaded), email)
+        return compose_stamp(_seal_source(request, email, uploaded, choice), email)
 
     def _google_picture(request: Request) -> str | None:
         """ログインしている Google アカウントのアイコン URL。
@@ -325,6 +355,8 @@ def create_app(
                 "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
                 # 原本を開く先。Drive にあるならそちらを指す（無ければアプリが配る PDF）
                 "document_url": _web_url(file_id),
+                # 選べる印影。先頭が既定（_seal_source の落ちる順と同じ）
+                "seal_choices": _seal_choices(request, email) if email else [],
             },
         )
 
@@ -335,6 +367,7 @@ def create_app(
         file_id: str,
         m: str = "",
         csrf: str = Form(""),
+        seal_choice: str = Form(""),
         seal_image: UploadFile | None = File(None),
     ) -> RedirectResponse:
         # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
@@ -373,7 +406,7 @@ def create_app(
                 tsa_url=tsa_url,
                 signer_name=email,
                 reason=f"{role}として承認",
-                seal=_stamp_for(request, email, uploaded),
+                seal=_stamp_for(request, email, uploaded, seal_choice),
             )
         else:
             sign_invisible(
@@ -457,13 +490,16 @@ def create_app(
         return _back_to_sign_page(file_id, m)
 
     @app.get("/seal/preview.png")
-    def seal_preview(request: Request) -> Response:
-        """いま押されることになる絵。署名ページに出す。"""
+    def seal_preview(request: Request, choice: str = "") -> Response:
+        """いま押されることになる絵。署名ページに出す。
+
+        choice を渡すと、その候補の絵を返す（選ぶ画面に並べるため）。
+        """
         email = identity_provider.verified_email(request)
         if not email:
             raise HTTPException(status_code=401, detail="ログインが必要です")
         buffer = io.BytesIO()
-        _stamp_for(request, email, None).save(buffer, format="PNG")
+        _stamp_for(request, email, None, choice).save(buffer, format="PNG")
         return Response(buffer.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.get("/account/icon.png")

@@ -683,3 +683,82 @@ def test_without_drive_the_app_still_offers_the_pdf(env):
     body = client.get(_url()).text
     assert "PDF を開く" in body
     assert "drive.google.com" not in body
+
+
+def test_the_signer_can_pick_which_seal_to_press(env):
+    """押される絵をタップすると候補が並び、選んだものが押される。"""
+    client, identity, store_dir = env
+    identity.email = "kumiaicho@example.test"
+    body = client.get(_url()).text
+
+    # アイコンを持たない開発用の身元確認なので、候補は「自動生成」だけ＋アップロード
+    assert 'name="seal_choice" value="generated"' in body
+    assert 'type="file" name="seal_image"' in body
+    assert "/seal/preview.png?choice=generated" in body
+
+
+def test_the_preview_shows_the_chosen_kind(env):
+    """候補ごとの絵が引けること（選ぶ画面に並べるため）。"""
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    generated = client.get("/seal/preview.png?choice=generated")
+    assert generated.status_code == 200
+    assert generated.content.startswith(PNG_MAGIC)
+
+
+def test_choosing_the_generated_seal_ignores_the_registered_image(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """名簿に画像が指定されていても、自動生成を選べば生成した丸印が押される。"""
+    pytest.importorskip("pypdfium2")
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    # 名簿に指定する画像（真っ青の四角）を用意する
+    registered = tmp_path / "registered.png"
+    Image.new("RGB", (200, 200), (0, 0, 255)).save(registered)
+
+    key, cert = dev_cert
+    identity = FakeIdentityProvider("kumiaicho@example.test")
+    app = create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory(
+            {"kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本", seal_image=registered)}
+        ),
+        identity_provider=identity,
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    client = TestClient(app)
+    body = client.get(_url()).text
+    assert 'value="registered"' in body  # 名簿の印影も候補に並ぶ
+
+    chosen = Image.open(io.BytesIO(client.get("/seal/preview.png?choice=generated").content)).convert("RGB")
+    pixels = list(chosen.getdata())
+    # 生成した丸印は朱色。名簿の青い画像は選ばれていない
+    assert any(r > 150 and b < 100 for r, g, b in pixels)
+    assert not any(b > 150 and r < 100 for r, g, b in pixels)
+
+
+def test_the_account_icon_appears_as_a_choice_when_there_is_one(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """アイコンを持っている人には、その候補が並ぶ（持っていない人には出さない）。"""
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    class WithPicture(FakeIdentityProvider):
+        def picture_url(self, request):
+            return "https://lh3.googleusercontent.com/a/xyz"
+
+    key, cert = dev_cert
+    app = create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
+        identity_provider=WithPicture("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    body = TestClient(app).get(_url()).text
+    assert 'value="icon"' in body
+    assert "アカウントのアイコン" in body

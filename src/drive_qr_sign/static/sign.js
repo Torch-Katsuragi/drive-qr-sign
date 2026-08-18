@@ -49,3 +49,25 @@ function swapAction(html) {
   const current = document.querySelector(".cols");
   if (fresh && current) current.replaceWith(fresh);
 }
+
+// 印影を選んだら、押される絵の表示をその場で入れ替える。
+// 何が押されるのかを、押す前に見て確かめられることが目的。
+document.addEventListener("change", (event) => {
+  const preview = document.getElementById("seal-preview");
+  if (!preview) return;
+
+  const radio = event.target.closest('input[name="seal_choice"]');
+  if (radio?.dataset.preview) {
+    preview.src = radio.dataset.preview;
+    return;
+  }
+
+  const file = event.target.closest('input[type="file"][name="seal_image"]');
+  if (file?.files?.length) {
+    // 検疫（丸く切り抜く等）はサーバ側で通すので、ここで見えるのは元の画像
+    preview.src = URL.createObjectURL(file.files[0]);
+    file.closest(".choices")?.querySelectorAll('input[name="seal_choice"]').forEach((other) => {
+      other.checked = false;
+    });
+  }
+});
