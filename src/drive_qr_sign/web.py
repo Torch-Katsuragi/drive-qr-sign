@@ -201,7 +201,15 @@ def create_app(
         return remembered
 
     def _log_breakdown(what: str, marks: list[tuple[str, float]]) -> None:
-        """どこで待っていたかを1行に残す。体感の重さは推測ではなくログで詰める。"""
+        """どこで待っていたかを1行に残す。体感の重さは推測ではなくログで詰める。
+
+        実測（本番・2026-08-18）:
+            書類の用意=1737ms 署名（TSA込み）=1685ms 書き戻し=2073ms 合計=5495ms
+
+        書き戻しを画面の後ろに回せば2秒縮むが、そうすると「押せたように見えて
+        Drive には無い」状態が作れてしまい、直列化と失敗の通知が要る。
+        2秒のために壊れ方を複雑にしない、と判断して同期のままにしている（松本判断）。
+        """
         parts = [
             f"{label}={(at - before) * 1000:.0f}ms"
             for (label, at), (_, before) in zip(marks[1:], marks)
@@ -451,7 +459,9 @@ def create_app(
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
         その署名が自分のものを含めて覆っているので、抜くと相手のものが壊れる。
         """
+        marks = [("開始", time.perf_counter())]
         pdf = _load(file_id, m, fresh=True)
+        marks.append(("書類の用意", time.perf_counter()))
 
         email = identity_provider.verified_email(request)
         if not email:
@@ -473,6 +483,8 @@ def create_app(
 
         documents.put(file_id, (document_store.store_signed(file_id, reverted), reverted))
         verified.put(file_id, True)
+        marks.append(("書き戻し", time.perf_counter()))
+        _log_breakdown("取り消し", marks)
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
         background.add_task(
