@@ -28,6 +28,7 @@ from drive_qr_sign.documents import LocalDocumentStore
 from drive_qr_sign.drive import DriveDocumentStore, build_service
 from drive_qr_sign.google_identity import ClientSecrets, GoogleIdentityProvider
 from drive_qr_sign.identity import SignerDirectory, SignerEntry
+from drive_qr_sign.notify import GmailNotifier, build_gmail_service
 from drive_qr_sign.qr import sign_url
 from drive_qr_sign.seal_store import LocalSealStore
 from drive_qr_sign.signing import load_signer
@@ -72,6 +73,10 @@ SIGNERS_OVERRIDE = Path(__file__).resolve().parent.parent / "secrets" / "dev-sig
 #   dev-drive.json       … {"file_id": "<Driveのファイル id>"}
 SERVICE_ACCOUNT = Path(__file__).resolve().parent.parent / "secrets" / "service-account.json"
 DRIVE_CONFIG = Path(__file__).resolve().parent.parent / "secrets" / "dev-drive.json"
+
+# 署名の記録メールを送るアカウントの資格情報（`python tools/authorize_sender.py` で作る）。
+# 無ければ送らない
+GMAIL_SENDER = Path(__file__).resolve().parent.parent / "secrets" / "gmail-sender.json"
 
 
 def load_signers() -> dict:
@@ -167,6 +172,16 @@ def build_document_store():
     return store, file_id, store.can_read
 
 
+def build_notifier():
+    """署名の記録メールを送る先。資格情報が無ければ送らない。"""
+    if not GMAIL_SENDER.exists():
+        print(f"! {GMAIL_SENDER.name} が無いので署名の記録メールは送らない")
+        return None
+
+    print(f"署名の記録メールを送る（差出人は {GMAIL_SENDER.name} の持ち主）")
+    return GmailNotifier(build_gmail_service(GMAIL_SENDER))
+
+
 def main() -> None:
     ensure_dev_cert()
     signers = load_signers()
@@ -181,6 +196,7 @@ def main() -> None:
         tsa_url=None,  # 開発中は TSA に出ない。本番は freeTSA か認定TSA
         seal_store=LocalSealStore(OUT_DIR / "dev-seals"),
         can_read=can_read,
+        notifier=build_notifier(),
     )
     if is_fake:
         app.middleware("http")(remember_dev_identity)

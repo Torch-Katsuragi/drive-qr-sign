@@ -69,6 +69,20 @@ class FakeGmail:
         return self.messages_resource
 
 
+def test_sender_is_left_to_gmail_by_default():
+    """差出人を知るためだけに読み取り権限を足さない。
+
+    `gmail.send` だけでは自分のアドレスすら問い合わせられないので、From は Gmail に埋めさせる。
+    """
+    gmail = FakeGmail()
+    GmailNotifier(gmail).notify(make_notice())
+
+    (_, body), = gmail.messages_resource.sent
+    message = email.message_from_bytes(base64.urlsafe_b64decode(body["raw"]))
+    assert message["From"] is None
+    assert message["To"] == "signer@example.test"
+
+
 def test_gmail_notifier_sends_to_the_signer():
     gmail = FakeGmail()
     GmailNotifier(gmail, sender="no-reply@example.test").notify(make_notice())

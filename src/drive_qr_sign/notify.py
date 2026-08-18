@@ -102,9 +102,14 @@ class NullNotifier:
 
 
 class GmailNotifier:
-    """送信専用アカウントの資格情報で Gmail から送る。"""
+    """送信専用アカウントの資格情報で Gmail から送る。
 
-    def __init__(self, service, sender: str):
+    sender を省略すると、差出人は Gmail が資格情報の持ち主で埋める。
+    自分の宛先を知るためだけに読み取り権限を足すのは本末転倒なので、既定はこちら
+    （`gmail.send` は自分のアドレスを問い合わせることすらできない）。
+    """
+
+    def __init__(self, service, sender: str | None = None):
         self._service = service
         self._sender = sender
 
@@ -112,7 +117,8 @@ class GmailNotifier:
         subject, body = render_notice(notice)
         message = EmailMessage()
         message["To"] = notice.signer_email
-        message["From"] = self._sender
+        if self._sender:
+            message["From"] = self._sender
         message["Subject"] = subject
         message.set_content(body)
 
