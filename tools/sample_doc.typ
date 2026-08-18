@@ -23,19 +23,14 @@
   #place(bottom + center, dy: 4.5mm, text(size: 7pt, fill: gray, role))
 ]
 
-// QR は署名ページの入口。位置を metadata に残すのは、カメラで紙にかざしたときに
-// この矩形を基準にして押印枠の位置を割り出すため（AR 表示）
+// QR は署名ページの入口。読むと、その書類の署名ページが開く
 #let qr-path = sys.inputs.at("qr", default: none)
-#let qr-anchor(w: 22mm) = box(width: w, height: w)[
-  #context [
-    #let p = here().position()
-    #metadata((page: p.page, x: p.x.pt(), y: p.y.pt(), w: w.pt(), h: w.pt())) <qr-anchor>
-  ]
+#let qr-block(w: 22mm) = box(width: w, height: w)[
   #if qr-path != none { image(qr-path, width: w, height: w) }
 ]
 
 // 押印枠は右上にあるので、QR は左上へ。重なると読めないし押せない
-#place(top + left, qr-anchor())
+#place(top + left, qr-block())
 
 #align(center, text(size: 16pt, weight: "bold")[支出調書（サンプル）])
 

@@ -8,8 +8,7 @@
 2. その id から署名ページの URL を作り、QR に焼く
 3. Typst でコンパイル（QR が紙面に入る）
 4. 押印枠の座標に空の署名フィールドを注入する
-5. QR の矩形を PDF に書く（カメラで見たときの基準になる）
-6. 予約した id でアップロードする
+5. 予約した id でアップロードする
 
 file id の鶏卵問題——QR に URL を焼くには id が要るが、id はアップロード後にしか
 決まらない——を、先に予約することで解いている。後から埋め込む工程を作らない。
@@ -26,15 +25,9 @@ import segno
 import typst
 
 from drive_qr_sign.drive import build_service
-from drive_qr_sign.layout import write_qr_rect
 from drive_qr_sign.qr import sign_url
 from drive_qr_sign.signing import add_signature_fields, list_signature_fields
-from drive_qr_sign.typst_anchor import (
-    anchors_to_placements,
-    page_heights,
-    query_anchors,
-    query_qr_anchor,
-)
+from drive_qr_sign.typst_anchor import anchors_to_placements, page_heights, query_anchors
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE = REPO_ROOT / "tools" / "sample_doc.typ"
@@ -71,18 +64,8 @@ def main(argv: list[str]) -> int:
 
     heights = page_heights(plain)
     placements = anchors_to_placements(query_anchors(SOURCE, root=REPO_ROOT, inputs=inputs), heights)
-    with_fields = OUT_DIR / "document-fields.pdf"
-    add_signature_fields(plain, with_fields, placements)
-
-    qr_anchor = query_qr_anchor(SOURCE, root=REPO_ROOT, inputs=inputs)
     ready = OUT_DIR / "document-ready.pdf"
-    if qr_anchor:
-        page_ix = int(qr_anchor["page"]) - 1
-        height = heights[page_ix]
-        x, y, w, h = (float(qr_anchor[k]) for k in ("x", "y", "w", "h"))
-        write_qr_rect(with_fields, ready, page=page_ix, box=(x, height - y - h, x + w, height - y))
-    else:
-        ready = with_fields
+    add_signature_fields(plain, ready, placements)
 
     print(f"押印枠  : {list_signature_fields(ready, filled=False)}")
     print(f"できた  : {ready}")

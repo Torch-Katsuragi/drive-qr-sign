@@ -16,7 +16,6 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from .signing import FieldPlacement
 
 ANCHOR_LABEL = "<sig-anchor>"
-QR_LABEL = "<qr-anchor>"
 
 
 def query_anchors(
@@ -52,21 +51,6 @@ def _media_box(page) -> list[float]:
             return [float(_resolve(v)) for v in _resolve(box)]
         node = _resolve(node.get("/Parent")) if node.get("/Parent") is not None else None
     raise ValueError("/MediaBox が見つからない")
-
-
-def query_qr_anchor(
-    typ_file: Path | str, *, root: Path | str | None = None, inputs: dict | None = None
-) -> dict | None:
-    """QR を置いた矩形。カメラで紙を見たときの基準になる。"""
-    import typst
-
-    raw = typst.query(
-        str(typ_file), QR_LABEL, field="value", format="json",
-        root=str(root) if root else None,
-        sys_inputs=inputs or {},
-    )
-    found = json.loads(raw)
-    return found[0] if found else None
 
 
 def page_heights(pdf_file: Path | str) -> list[float]:

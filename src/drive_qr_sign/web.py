@@ -28,7 +28,6 @@ from fastapi.templating import Jinja2Templates
 
 from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
-from .layout import describe
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .qr import InvalidPayload, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
@@ -180,21 +179,6 @@ def create_app(
     @app.get("/status")
     def status() -> dict[str, str]:
         return {"status": "ok"}
-
-    @app.get("/s/{file_id}/layout.json")
-    def document_layout(request: Request, file_id: str, m: str = "") -> dict:
-        """紙の上に何がどこにあるか。カメラ表示が使う。"""
-        return describe(_reader(request, file_id, m))
-
-    @app.get("/s/{file_id}/ar", response_class=HTMLResponse)
-    def ar_page(request: Request, file_id: str, m: str = "") -> HTMLResponse:
-        """カメラで紙にかざす画面。"""
-        layout = describe(_reader(request, file_id, m))
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="ar.html",
-            context={"file_id": file_id, "mac": m, "silent": layout["silent"]},
-        )
 
     @app.get("/s/{file_id}/document.pdf")
     def document_file(request: Request, file_id: str, m: str = "") -> Response:
