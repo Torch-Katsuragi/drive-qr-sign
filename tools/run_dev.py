@@ -77,6 +77,10 @@ DRIVE_CONFIG = Path(__file__).resolve().parent.parent / "secrets" / "dev-drive.j
 # 無ければ送らない
 GMAIL_SENDER = Path(__file__).resolve().parent.parent / "secrets" / "gmail-sender.json"
 
+# 送信専用サービス（Resend）の鍵。あれば Gmail より優先する（本番と同じ順番）
+RESEND_KEY = Path(__file__).resolve().parent.parent / "secrets" / "resend-api-key.txt"
+NOTICE_SENDER = "ねむりぎ工房 <no-reply@sleeptree.jp>"
+
 
 def load_signers() -> dict:
     if not SIGNERS_OVERRIDE.exists():
@@ -172,7 +176,16 @@ def build_document_store():
 
 
 def build_notifier():
-    """署名の記録メールを送る先。資格情報が無ければ送らない。"""
+    """署名の記録メールを送る先。資格情報が無ければ送らない。
+
+    本番と同じく、送信専用サービス（Resend）の鍵があればそちらを使う。
+    """
+    if RESEND_KEY.exists():
+        from drive_qr_sign.notify import ResendNotifier
+
+        print(f"署名の記録メールを送る（Resend / 差出人 {NOTICE_SENDER}）")
+        return ResendNotifier(RESEND_KEY.read_text(encoding="utf-8").strip(), NOTICE_SENDER)
+
     if not GMAIL_SENDER.exists():
         print(f"! {GMAIL_SENDER.name} が無いので署名の記録メールは送らない")
         return None

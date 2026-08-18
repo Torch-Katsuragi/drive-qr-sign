@@ -113,3 +113,52 @@ def test_a_failed_notification_does_not_break_the_signature():
 
 def test_null_notifier_is_the_default_shape():
     assert NullNotifier().notify(make_notice()) is None
+
+
+def test_resend_notifier_posts_the_notice():
+    """送信専用サービス経由でも、送る中身は同じ（本文にPDFのハッシュが入る）。"""
+    from drive_qr_sign.notify import ResendNotifier
+
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    def post(url, *, headers, json, timeout):
+        captured.update(url=url, headers=headers, body=json, timeout=timeout)
+        return Response()
+
+    notice = SignatureNotice.create(
+        file_id="doc-1",
+        signer_email="signer@example.test",
+        role="組合長",
+        signed_pdf=b"%PDF-1.7 signed",
+    )
+    ResendNotifier("re_test_key", "ねむりぎ工房 <no-reply@sleeptree.jp>", post=post).notify(notice)
+
+    assert captured["url"] == "https://api.resend.com/emails"
+    assert captured["headers"]["Authorization"] == "Bearer re_test_key"
+    assert captured["body"]["from"] == "ねむりぎ工房 <no-reply@sleeptree.jp>"
+    assert captured["body"]["to"] == ["signer@example.test"]
+    assert notice.digest in captured["body"]["text"]
+
+
+def test_resend_notifier_raises_so_the_failure_is_logged():
+    """送れなかったことは握りつぶさない（notify_quietly が受けて記録に残す）。"""
+    import pytest
+
+    from drive_qr_sign.notify import ResendNotifier
+
+    class Failing:
+        def raise_for_status(self):
+            raise RuntimeError("401 Unauthorized")
+
+    def post(url, *, headers, json, timeout):
+        return Failing()
+
+    notice = SignatureNotice.create(
+        file_id="doc-1", signer_email="a@example.test", role=None, signed_pdf=b"x"
+    )
+    with pytest.raises(RuntimeError):
+        ResendNotifier("bad", "x@sleeptree.jp", post=post).notify(notice)

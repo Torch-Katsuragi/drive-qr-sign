@@ -13,7 +13,9 @@
     PUBLIC_ORIGIN      このサービスの URL（https://... 。リダイレクト URI の組み立てに使う）
     TSA_URL            省略すると freeTSA
     OAUTH_SCOPES       省略すると openid email
-    GMAIL_SENDER_JSON  署名の記録メールを送るアカウントの資格情報。無ければ送らない
+    RESEND_API_KEY     署名の記録メールを送る鍵（Resend）。あるとこちらが優先される
+    NOTICE_SENDER      その差出人（例: ねむりぎ工房 <no-reply@sleeptree.jp>）
+    GMAIL_SENDER_JSON  Gmail から送る場合の資格情報。無ければ送らない
 
 Drive は Cloud Run に紐づいたサービスアカウントで触るので、鍵ファイルは持たない。
 
@@ -30,7 +32,7 @@ import os
 from .drive import DriveDocumentStore, build_default_service
 from .google_identity import BASE_SCOPES, ClientSecrets, GoogleIdentityProvider
 from .identity import SignerDirectory, SignerEntry
-from .notify import GmailNotifier, build_gmail_service_from_info
+from .notify import GmailNotifier, ResendNotifier, build_gmail_service_from_info
 from .signing import FREE_TSA_URL, load_signer_from_pem
 from .web import create_app
 
@@ -66,7 +68,16 @@ def _identity_provider() -> GoogleIdentityProvider:
 
 
 def _notifier():
-    """署名の記録メール。資格情報が無ければ送らない（導入組織が選ぶオプション）。"""
+    """署名の記録メール。資格情報が無ければ送らない（導入組織が選ぶオプション）。
+
+    送信専用サービス（Resend）を優先する。Google アカウントを1つ増やして守るより、
+    送信だけができる鍵を1本持つほうが、漏れたときにできることが少ない。
+    Gmail 経路は、送信サービスを使わない導入先のために残す。
+    """
+    api_key = os.environ.get("RESEND_API_KEY")
+    if api_key:
+        return ResendNotifier(api_key, _required("NOTICE_SENDER"))
+
     raw = os.environ.get("GMAIL_SENDER_JSON")
     if not raw:
         return None

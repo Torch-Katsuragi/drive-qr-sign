@@ -141,6 +141,54 @@ class GmailNotifier:
         self._service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
+RESEND_ENDPOINT = "https://api.resend.com/emails"
+
+
+class ResendNotifier:
+    """送信専用サービス（Resend）から、事業ドメインの差出人で送る。
+
+    Google アカウントを1つ増やして守るより、送信だけができる鍵を1本持つほうが
+    被害範囲が小さい。鍵が漏れてもできるのは「このドメインからメールを出すこと」だけで、
+    Drive にも受信箱にも届かない（Gmail の資格情報は、その気になれば下書きも読めた）。
+
+    DKIM は `resend._domainkey.<ドメイン>` の鍵で、こちらのドメイン名義で署名される。
+    受信者の手元に残るコピーで検証できるという記録の性質は、Gmail から送っていたときと同じ。
+
+    > [!NOTE] 差出人ドメインの鍵はこちらが握っている
+    > Gmail から送っていたときは署名鍵が Google のものだった。自前ドメインでは
+    > DNS を持つこちらが鍵を差し替えられるので、「送っていないものを送ったことにする」
+    > 細工の余地は理屈のうえでは増える。ただし記録として効くのは**署名者の受信箱に
+    > 現に届いているコピー**のほうで、そちらは後から作れない。
+    """
+
+    def __init__(self, api_key: str, sender: str, *, endpoint: str = RESEND_ENDPOINT, post=None):
+        self._api_key = api_key
+        self._sender = sender
+        self._endpoint = endpoint
+        self._post = post  # テストから差し替える。既定は requests
+
+    def notify(self, notice: SignatureNotice) -> None:
+        subject, body = render_notice(notice)
+        post = self._post
+        if post is None:
+            import requests
+
+            post = requests.post
+
+        response = post(
+            self._endpoint,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+            json={
+                "from": self._sender,
+                "to": [notice.signer_email],
+                "subject": subject,
+                "text": body,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+
+
 def build_gmail_service_from_info(info: dict):
     """認可済みユーザーの情報（refresh token を含む dict）から Gmail クライアントを作る。
 
