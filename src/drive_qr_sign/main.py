@@ -27,6 +27,7 @@ Drive は Cloud Run に紐づいたサービスアカウントで触るので、
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from .drive import DriveDocumentStore, build_default_service
@@ -84,7 +85,21 @@ def _notifier():
     return GmailNotifier(build_gmail_service_from_info(json.loads(raw)))
 
 
+def _configure_logging() -> None:
+    """アプリのログを標準出力に出す。
+
+    ⚠これが無いと `logger.info` は消える。uvicorn は自前のロガーだけを設定するので、
+    アプリ側のロガーは root（既定 WARNING）に落ちて捨てられる。
+    Cloud Run のログに押印の内訳が出ないのはこれが原因だった（実測して発見）。
+    """
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+
+
 def build() -> "object":
+    _configure_logging()
+    # 起動したことを1行残す。押すのが遅かったとき、コンテナの起動待ちだったのか
+    # 中の処理が重かったのかを、ログの並びだけで見分けられるようにする
+    logging.getLogger(__name__).info("起動")
     store = DriveDocumentStore(build_default_service())
     return create_app(
         document_store=store,
