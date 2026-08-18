@@ -23,9 +23,24 @@
   #place(bottom + center, dy: 4.5mm, text(size: 7pt, fill: gray, role))
 ]
 
+// QR は署名ページの入口。位置を metadata に残すのは、カメラで紙にかざしたときに
+// この矩形を基準にして押印枠の位置を割り出すため（AR 表示）
+#let qr-path = sys.inputs.at("qr", default: none)
+#let qr-anchor(w: 22mm) = box(width: w, height: w)[
+  #context [
+    #let p = here().position()
+    #metadata((page: p.page, x: p.x.pt(), y: p.y.pt(), w: w.pt(), h: w.pt())) <qr-anchor>
+  ]
+  #if qr-path != none { image(qr-path, width: w, height: w) }
+]
+
+// 押印枠は右上にあるので、QR は左上へ。重なると読めないし押せない
+#place(top + left, qr-anchor())
+
 #align(center, text(size: 16pt, weight: "bold")[支出調書（サンプル）])
 
-#v(6mm)
+// QR の高さぶん本文を下げる。place は流し込みの外なので、自分で場所を空ける
+#v(14mm)
 
 #grid(
   columns: (1fr, auto),
