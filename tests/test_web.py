@@ -605,3 +605,47 @@ def test_the_record_is_still_sent_when_the_answer_comes_first(fields_pdf: Path, 
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     assert [notice.signer_email for notice in sent] == ["kumiaicho@example.test"]
+
+
+def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
+    fields_pdf: Path, dev_cert, tmp_path: Path, monkeypatch
+):
+    """手元の写しは長く持つが、使う前に版番号で確かめるので古い状態は見せない。
+
+    確かめたばかりの数秒はそのまま使う（画面1枚ぶんの連続した要求をまとめるため）。
+    ここではその窓を0にして、確かめる側だけを見る。
+    """
+    from drive_qr_sign import web
+
+    monkeypatch.setattr(web, "VERIFIED_TTL", 0)
+
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    key, cert = dev_cert
+    identity = FakeIdentityProvider("kanji@example.test")  # 押印枠を持たない人
+    app = web.create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory({"kanji@example.test": None}),
+        identity_provider=identity,
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    client = TestClient(app)
+    assert "組合長" in client.get(_url()).text.split("未署名の押印枠:")[1]
+
+    # 別の経路（別インスタンスなど）で組合長が押される
+    signed = io.BytesIO()
+    sign_field(
+        io.BytesIO((store_dir / f"{FILE_ID}.pdf").read_bytes()),
+        signed,
+        field_name="組合長",
+        signer=load_signer(key, cert),
+        tsa_url=None,
+        signer_name="kumiaicho@example.test",
+    )
+    (store_dir / f"{FILE_ID}.signed.pdf").write_bytes(signed.getvalue())
+
+    assert "組合長" not in client.get(_url()).text.split("未署名の押印枠:")[1]

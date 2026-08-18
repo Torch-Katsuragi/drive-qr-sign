@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
+import time
 import logging
 from pathlib import Path
 
@@ -48,9 +49,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
-# 覚え書きの寿命。1回の画面表示（ページ→PDF→アイコン）を1往復にまとめるのが目的で、
-# 長くするほど「他の人が押した直後の古い状態」を見せる時間が延びる
-DOCUMENT_TTL = 10.0   # 書類の中身
+# 覚え書きの寿命。
+# ⚠書類の中身を短命にしても意味がなかった（当初10秒）。人は画面を開いて書類を読んでから
+# 押すので、押す頃には毎回消えている。**長く持ったうえで、使う前に版番号で確かめる**のが正しい。
+# 版番号の問い合わせは数百バイトで、本体（1MB級）を落とし直すのとは桁が違う。
+DOCUMENT_TTL = 600.0  # 書類の中身。使う前に必ず版番号で確かめるので、古いものを見せることはない
+VERIFIED_TTL = 10.0   # 版番号を確かめたばかり、とみなす時間（画面1枚ぶんの連続した要求をまとめる）
 ACCESS_TTL = 30.0     # Drive の共有設定
 PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わらない）
 
@@ -89,6 +93,7 @@ def create_app(
 
     # 1回の画面表示のあいだ、同じ問い合わせを繰り返さないための覚え書き（cache.py）
     documents = TimedCache(DOCUMENT_TTL)
+    verified = TimedCache(VERIFIED_TTL)
     access = TimedCache(ACCESS_TTL)
     pictures = TimedCache(PICTURE_TTL)
 
@@ -165,6 +170,15 @@ def create_app(
             remembered = access.put(key, bool(_can_read(file_id, email)))
         return remembered
 
+    def _log_breakdown(what: str, marks: list[tuple[str, float]]) -> None:
+        """どこで待っていたかを1行に残す。体感の重さは推測ではなくログで詰める。"""
+        parts = [
+            f"{label}={(at - before) * 1000:.0f}ms"
+            for (label, at), (_, before) in zip(marks[1:], marks)
+        ]
+        total = (marks[-1][1] - marks[0][1]) * 1000
+        logger.info("%s: %s 合計=%.0fms", what, " ".join(parts), total)
+
     def _version(file_id: str) -> str | None:
         """倉庫が持っている版。分からない倉庫なら None。"""
         source = getattr(document_store, "version", None)
@@ -188,16 +202,21 @@ def create_app(
         remembered = documents.get(file_id)
         if remembered is not None:
             version, pdf = remembered
-            if not fresh:
+            # 画面1枚ぶんの連続した要求（ページ→PDF本体）は、確かめ直さない
+            if not fresh and verified.get(file_id):
                 return pdf
             if version is not None and version == _version(file_id):
+                verified.put(file_id, True)
                 return pdf  # 手元のもので最新だった
 
+        started = time.perf_counter()
         try:
             pdf = document_store.fetch(file_id)
         except DocumentNotFound:
             raise HTTPException(status_code=404, detail="書類が見つかりません")
+        logger.info("Drive から取得: %s (%.0fms)", file_id, (time.perf_counter() - started) * 1000)
         documents.put(file_id, (_version(file_id), pdf))
+        verified.put(file_id, True)
         return pdf
 
     def _situation(
@@ -314,7 +333,9 @@ def create_app(
         # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
         # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
         # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
+        marks = [("開始", time.perf_counter())]
         pdf = _load(file_id, m, fresh=True)
+        marks.append(("書類の用意", time.perf_counter()))
 
         email = identity_provider.verified_email(request)
         if not email:
@@ -358,8 +379,12 @@ def create_app(
                 reason="確認",
             )
         signed_pdf = signed.getvalue()
+        marks.append(("署名（TSA込み）", time.perf_counter()))
         # 書き戻して返る版を覚えておく。直後の画面も、次の署名も、これで足りる
         documents.put(file_id, (document_store.store_signed(file_id, signed_pdf), signed_pdf))
+        verified.put(file_id, True)
+        marks.append(("書き戻し", time.perf_counter()))
+        _log_breakdown("署名", marks)
 
         # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
         # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む。
@@ -407,6 +432,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc))
 
         documents.put(file_id, (document_store.store_signed(file_id, reverted), reverted))
+        verified.put(file_id, True)
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
         background.add_task(
