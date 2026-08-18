@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}取り消しました{% endblock %}
+{% block content %}
+<h1>取り消しました</h1>
+<p class="doc">{{ file_id }}</p>
+
+<div class="cols">
+  <section>
+    <p class="who">{{ email }}</p>
+    <p class="role">{{ field }}</p>
+    <p>あなたの署名を取り消しました。押印枠は空に戻っています。</p>
+    <p class="note">
+      書類そのものは Drive に残っていて、取り消し前の版も版履歴から辿れます。
+      記録メールを使っている場合は、取り消したことも通知されます。
+    </p>
+    <p class="note">書き戻し先: {{ stored_as }}</p>
+    <p class="note"><a href="/s/{{ file_id }}?m={{ mac }}">署名の画面に戻る</a></p>
+  </section>
+</div>
+{% endblock %}

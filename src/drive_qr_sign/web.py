@@ -31,7 +31,15 @@ from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .qr import InvalidPayload, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
-from .signing import FREE_TSA_URL, list_signature_fields, sign_field, sign_invisible
+from .signing import (
+    FREE_TSA_URL,
+    NotRevocable,
+    last_signature,
+    list_signature_fields,
+    revoke_last_signature,
+    sign_field,
+    sign_invisible,
+)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -160,6 +168,19 @@ def create_app(
         already = silent_field_name(email) in list_signature_fields(io.BytesIO(pdf))
         return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
 
+    def _revocable_field(pdf: bytes, email: str) -> str | None:
+        """その人がいま取り消せる署名の欄名。取り消せなければ None。
+
+        取り消せるのは**自分が最後の押し手**のときだけ。後から誰かが押していたら、
+        その人の署名が自分の署名を含めて覆っているので、抜くと相手のものが壊れる。
+        積んだ順にしか外せない。
+        """
+        found = last_signature(pdf)
+        if not found:
+            return None
+        field, signer = found
+        return field if signer.strip().lower() == email.strip().lower() else None
+
     def _reader(request: Request, file_id: str, mac: str) -> bytes:
         """書類の中身を見せてよい相手にだけ PDF を返す。
 
@@ -207,6 +228,8 @@ def create_app(
                 "mode": mode,
                 "empty_fields": empty_fields,
                 "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
+                # 取り消せるのは自分が最後の押し手のときだけ
+                "revocable": _revocable_field(pdf, email) if email else None,
                 # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
                 "can_log_in": login_routes is not None,
                 # 中身を見せてよい相手か。未ログイン・共有されていない人にはビューアごと出さない
@@ -291,6 +314,59 @@ def create_app(
                 "role": role,
                 "email": email,
                 "mode": mode,
+                "stored_as": stored_as,
+            },
+        )
+
+    @app.post("/s/{file_id}/revoke", response_class=HTMLResponse)
+    def do_revoke(request: Request, file_id: str, m: str = "", csrf: str = Form("")) -> HTMLResponse:
+        """押し間違えたときに、自分の署名を外す。
+
+        外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
+        その署名が自分のものを含めて覆っているので、抜くと相手のものが壊れる。
+        """
+        pdf = _load(file_id, m)
+
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+
+        field = _revocable_field(pdf, email)
+        if field is None:
+            raise HTTPException(
+                status_code=409,
+                detail="取り消せません。あなたの後に誰かが署名しているか、署名がありません",
+            )
+
+        try:
+            reverted = revoke_last_signature(pdf, expect_signer=email)
+        except NotRevocable as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+        stored_as = document_store.store_signed(file_id, reverted)
+        # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
+        # 送ったメールは消せないので、事実の側を揃える
+        notify_quietly(
+            notifier,
+            SignatureNotice.create(
+                file_id=file_id,
+                signer_email=email,
+                role=None if field.startswith("silent-") else field,
+                signed_pdf=reverted,
+                revoked=True,
+            ),
+        )
+
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="revoked.html",
+            context={
+                "file_id": file_id,
+                "mac": m,
+                "email": email,
+                "field": field,
                 "stored_as": stored_as,
             },
         )

@@ -366,3 +366,60 @@ def _extract_csrf(html: str) -> str:
     marker = 'name="csrf" value="'
     start = html.index(marker) + len(marker)
     return html[start : html.index('"', start)]
+
+
+def test_signer_can_take_back_their_own_signature(env):
+    """押し間違えたときに取り消せること。"""
+    client, identity, store_dir = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]
+
+    body = client.get(_url()).text
+    assert "の署名を取り消す" in body
+
+    response = client.post(f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    assert response.status_code == 200
+    signed = store_dir / f"{FILE_ID}.signed.pdf"
+    assert list_signature_fields(signed, filled=True) == []
+    assert list_signature_fields(signed, filled=False) == ["組合長", "参事", "担当"]
+
+
+def test_cannot_take_back_once_someone_signed_after_you(env):
+    """後の人の署名は自分の署名を含めて覆っている。抜くと相手のものが壊れる。"""
+    client, identity, store_dir = env
+
+    identity.email = "kumiaicho@example.test"
+    first = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": first})
+
+    identity.email = "soumu@example.test"
+    second = _extract_csrf(client.get(_url()).text)
+    client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": second})
+
+    identity.email = "kumiaicho@example.test"
+    body = client.get(_url()).text
+    assert "いまは取り消せません" in body
+    assert client.post(
+        f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": first}
+    ).status_code == 409
+    # 2人ぶんとも残っている（並びはPDF内のフィールド順で、押した順ではない）
+    assert sorted(list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True)) == sorted(
+        ["組合長", "担当"]
+    )
+
+
+def test_the_last_signer_can_still_take_theirs_back(env):
+    """順に押した後でも、いちばん上の人は外せる（積んだ順に外れる）。"""
+    client, identity, store_dir = env
+    for who in ("kumiaicho@example.test", "soumu@example.test"):
+        identity.email = who
+        csrf = _extract_csrf(client.get(_url()).text)
+        client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    csrf = _extract_csrf(client.get(_url()).text)  # いまは soumu
+    assert client.post(
+        f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf}
+    ).status_code == 200
+    assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]

@@ -20,6 +20,9 @@
       {% elif mode == "role_done" %}
         <p class="role">{{ role }}</p>
         <p>この書類の {{ role }} 欄は署名済みです。</p>
+        {% if not revocable %}
+          <p class="note">あなたの後に誰かが署名しているため、いまは取り消せません。積んだ順にしか外せないので、後の人が取り消すのを待つことになります。</p>
+        {% endif %}
 
       {% elif mode == "silent_ready" %}
         <p>あなたに割り当てられた押印枠はありません。確認した記録として、紙面に出ない署名を残せます。</p>
@@ -27,6 +30,9 @@
 
       {% elif mode == "silent_done" %}
         <p>この書類は確認済みとして記録されています。</p>
+        {% if not revocable %}
+          <p class="note">あなたの後に誰かが署名しているため、いまは取り消せません。</p>
+        {% endif %}
 
       {% else %}
         <p>このアカウントには、この書類を見る権限がありません。Drive の共有設定を確認してください。</p>
@@ -64,6 +70,15 @@
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit">確認したことを記録する</button>
       </form>
+    {% endif %}
+
+    {% if revocable %}
+      <img class="seal" src="/seal/preview.png" alt="押した印影">
+      <form method="post" action="/s/{{ file_id }}/revoke?m={{ mac }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="quiet">{{ revocable }} の署名を取り消す</button>
+      </form>
+      <p class="note">押し間違えたときに使います。あなたが最後の押し手のあいだだけ取り消せます。</p>
     {% endif %}
   </aside>
 </div>

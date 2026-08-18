@@ -47,17 +47,26 @@ class SignatureNotice:
     file_id: str
     signer_email: str
     role: str | None  # None なら押印枠を持たない人のサイレント署名
-    digest: str  # 署名済み PDF の SHA-256（16進）
+    digest: str  # そのときの PDF の SHA-256（16進）
     signed_at: datetime
+    revoked: bool = False  # 押した記録ではなく、取り消した記録
 
     @staticmethod
-    def create(*, file_id: str, signer_email: str, role: str | None, signed_pdf: bytes):
+    def create(
+        *,
+        file_id: str,
+        signer_email: str,
+        role: str | None,
+        signed_pdf: bytes,
+        revoked: bool = False,
+    ):
         return SignatureNotice(
             file_id=file_id,
             signer_email=signer_email,
             role=role,
             digest=hashlib.sha256(signed_pdf).hexdigest(),
             signed_at=datetime.now(timezone.utc),
+            revoked=revoked,
         )
 
     @property
@@ -68,16 +77,22 @@ class SignatureNotice:
 def render_notice(notice: SignatureNotice) -> tuple[str, str]:
     """件名と本文。機械で突き合わせられるよう、値は1行1項目で書く。"""
     what = f"{notice.role} 欄に押印" if notice.role else "確認の記録（紙面には出ない署名）"
-    subject = f"[署名の記録] {notice.file_id}"
+    if notice.revoked:
+        subject = f"[署名の取り消し] {notice.file_id}"
+        headline = "下記の書類で、あなたのアカウントの署名が取り消されました。"
+        what = f"{what} の取り消し"
+    else:
+        subject = f"[署名の記録] {notice.file_id}"
+        headline = "下記の書類に、あなたのアカウントで署名が行われました。"
     body = f"""{notice.signer_email} 様
 
-下記の書類に、あなたのアカウントで署名が行われました。
+{headline}
 
   内容          : {what}
   書類          : {notice.drive_url}
   ファイル ID   : {notice.file_id}
-  署名済みPDFのSHA-256: {notice.digest}
-  署名時刻(UTC) : {notice.signed_at.isoformat(timespec="seconds")}
+  現在のPDFのSHA-256: {notice.digest}
+  時刻(UTC)     : {notice.signed_at.isoformat(timespec="seconds")}
 
 このメールは記録として保存してください。
 送信ドメインの DKIM 署名が付いているため、このメールを持っていれば、

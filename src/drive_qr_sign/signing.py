@@ -234,3 +234,58 @@ def sign_invisible(
         signer_name=signer_name,
         new_field_spec=fields.SigFieldSpec(sig_field_name=field_name),
     )
+
+
+class NotRevocable(Exception):
+    """その署名は取り消せない。"""
+
+
+def last_signature(pdf: bytes) -> tuple[str, str] | None:
+    """最後に押された署名の (フィールド名, 署名者) を返す。無ければ None。
+
+    「最後」はファイルの終端まで覆っているもの。増分更新は積み重なるので、
+    いちばん上に積まれた署名だけがファイル全体を覆う。
+    """
+    reader = PdfFileReader(io.BytesIO(pdf))
+    for embedded in reader.embedded_signatures:
+        covered = embedded.byte_range[2] + embedded.byte_range[3]
+        if covered >= len(pdf.rstrip()):
+            name = embedded.sig_object.get("/Name")
+            return embedded.field_name, (str(name) if name else "")
+    return None
+
+
+def revoke_last_signature(pdf: bytes, *, expect_signer: str) -> bytes:
+    """最後の署名を取り消した PDF を返す。
+
+    署名は増分更新で積まれているので、その署名が入る直前の版まで切り詰めれば消える。
+
+    > [!IMPORTANT] 外せるのは最後の1つだけ
+    > 後から押された署名は、先の署名を含めたファイル全体をハッシュしている。
+    > 中間の署名だけを抜くと、後の人の署名が壊れる。だから積んだ順にしか外せない。
+    """
+    reader = PdfFileReader(io.BytesIO(pdf))
+    signatures = list(reader.embedded_signatures)
+    if not signatures:
+        raise NotRevocable("署名が無い")
+
+    end = len(pdf.rstrip())
+    top = None
+    for embedded in signatures:
+        if embedded.byte_range[2] + embedded.byte_range[3] >= end:
+            top = embedded
+            break
+    if top is None:
+        raise NotRevocable("最後の署名を特定できない")
+
+    name = top.sig_object.get("/Name")
+    if (str(name) if name else "") != expect_signer:
+        raise NotRevocable("最後に押したのは別の人")
+    if top.signed_revision < 1:
+        raise NotRevocable("元の版が無い")
+
+    start = reader.xrefs.get_startxref_for_revision(top.signed_revision - 1)
+    marker = pdf.find(b"%%EOF", start)
+    if marker < 0:
+        raise NotRevocable("直前の版の終端が見つからない")
+    return pdf[: marker + len(b"%%EOF")] + bytes([10])
