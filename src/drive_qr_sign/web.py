@@ -159,8 +159,10 @@ def create_app(
             raise HTTPException(status_code=403, detail="この書類を見られるアカウントではありません")
         return pdf
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    # ⚠`/healthz` は使えない。Cloud Run のフロントエンドが横取りして、
+    # リクエストがコンテナまで届かない（実測: アクセスログに一切残らず Google の404が返る）
+    @app.get("/status")
+    def status() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/s/{file_id}/document.pdf")

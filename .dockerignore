@@ -1,0 +1,9 @@
+.venv/
+.git/
+out/
+secrets/
+tests/
+tools/
+docs/
+*.md
+!README.md

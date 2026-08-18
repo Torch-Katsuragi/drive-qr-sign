@@ -44,7 +44,14 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-drive_qr_sign = ["templates/*.html"]
+# テンプレートだけでなく、配るもの一式を含める。
+# 抜けると本番のコンテナで「Directory does not exist」で起動に失敗する
+drive_qr_sign = [
+    "templates/*.html",
+    "static/*.js",
+    "static/pdfjs/*",
+    "assets/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

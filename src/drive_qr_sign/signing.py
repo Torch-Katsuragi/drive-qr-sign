@@ -11,6 +11,7 @@ TSA の URL と署名鍵はいずれも引数で受け取る。どちらを使�
 
 from __future__ import annotations
 
+import io
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import BinaryIO, Iterable, Iterator
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers, timestamps
+from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 # PDF はパスでもストリームでも受ける。web 層はディスクに落とさず BytesIO で渡す
 PdfSource = Path | str | BinaryIO
@@ -89,6 +91,27 @@ def load_signer(key_file: Path | str, cert_file: Path | str, *, key_passphrase: 
     """PEM の秘密鍵と証明書から署名者を作る。"""
     return signers.SimpleSigner.load(
         str(key_file), str(cert_file), key_passphrase=key_passphrase
+    )
+
+
+def load_signer_from_pem(key_pem: bytes, cert_pem: bytes, *, key_passphrase: bytes | None = None):
+    """PEM の中身そのものから署名者を作る。
+
+    Cloud Run では鍵をファイルとして置かず、Secret Manager から環境変数で受ける。
+    ディスクに書き出す工程を作らないためにこちらを使う。
+
+    ⚠この形でも鍵はプロセスのメモリに載る。鍵を持ち出せなくしたいなら KMS に移す
+    （呼び出し側から見た形は同じなので、ここを差し替えるだけで済む）。
+    """
+    from pyhanko import keys
+
+    certs = list(keys.load_certs_from_pemder_data(cert_pem))
+    if not certs:
+        raise ValueError("証明書を読めなかった")
+    return signers.SimpleSigner(
+        signing_cert=certs[0],
+        signing_key=keys.load_private_key_from_pemder_data(key_pem, passphrase=key_passphrase),
+        cert_registry=SimpleCertificateStore.from_certs(certs[1:]),
     )
 
 

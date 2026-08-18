@@ -67,9 +67,10 @@ def _url(file_id: str = FILE_ID, secret: bytes = SECRET) -> str:
     return f"/s/{file_id}?m={make_mac(secret, file_id)}"
 
 
-def test_healthz(env):
+def test_status(env):
+    """`/healthz` ではない。Cloud Run のフロントエンドがそのパスを横取りするため。"""
     client, _, _ = env
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/status").json() == {"status": "ok"}
 
 
 def test_forged_qr_is_refused(env):
