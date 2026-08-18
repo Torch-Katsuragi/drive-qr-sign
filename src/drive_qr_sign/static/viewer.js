@@ -4,21 +4,41 @@
 
 import * as pdfjs from "./pdfjs/pdf.min.mjs";
 
+let revision = 0;
+
 const container = document.getElementById("document");
 if (container) {
   pdfjs.GlobalWorkerOptions.workerSrc = container.dataset.worker;
-  show(container).catch((error) => {
-    console.error(error);
-    container.insertAdjacentHTML(
-      "beforeend",
-      '<p class="note">書類を表示できませんでした。「PDF を開く」から確認してください。</p>'
-    );
-  });
+  render();
+  // 署名・取り消しの直後に、書類だけを描き直すための入口（static/sign.js から呼ぶ）
+  window.reloadDocument = render;
+}
+
+function render() {
+  // 描き直しのあいだ背丈を保つ。空にした瞬間にページが縮むと、
+  // ブラウザがスクロール位置を切り詰めて先頭へ飛ぶ
+  const height = container.offsetHeight;
+  if (height) container.style.minHeight = `${height}px`;
+  container.replaceChildren();
+  revision += 1;
+  show(container)
+    .then(() => {
+      container.style.minHeight = "";
+    })
+    .catch((error) => {
+      container.style.minHeight = "";
+      console.error(error);
+      container.insertAdjacentHTML(
+        "beforeend",
+        '<p class="note">書類を表示できませんでした。「PDF を開く」から確認してください。</p>'
+      );
+    });
 }
 
 async function show(container) {
   const pdf = await pdfjs.getDocument({
-    url: container.dataset.src,
+    // 押したあとの版を確実に取りに行く（同じ URL のままだと古い版が出る余地がある）
+    url: revision > 1 ? `${container.dataset.src}&r=${revision}` : container.dataset.src,
     withCredentials: true, // セッションのクッキーを付ける
   }).promise;
 

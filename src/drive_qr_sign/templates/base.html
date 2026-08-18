@@ -93,6 +93,9 @@
   }
   button:hover { filter: brightness(1.08); }
   button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 400; }
+  /* 押せない理由は文章で添える。ボタンを消すと「取り消せる場所がある」ことごと見えなくなる */
+  button[disabled] { opacity: .45; cursor: not-allowed; }
+  button[disabled]:hover { filter: none; }
 
   input[type=file] { width: 100%; font: inherit; font-size: .9rem; margin-top: .5rem; }
   details { width: 100%; text-align: left; }

@@ -3,6 +3,10 @@
 <h1>書類への署名</h1>
 <p class="doc">{{ file_id }}</p>
 
+{#
+  押す前と押した後で、同じ場所のボタンが「署名する」⇄「取り消す」と入れ替わるだけにする。
+  押した結果は書類とボタンを見れば分かるので、専用の完了画面は作らない。
+#}
 <div class="cols">
   <section>
     {% if mode == "login" %}
@@ -20,9 +24,6 @@
       {% elif mode == "role_done" %}
         <p class="role">{{ role }}</p>
         <p>この書類の {{ role }} 欄は署名済みです。</p>
-        {% if not revocable %}
-          <p class="note">あなたの後に誰かが署名しているため、いまは取り消せません。積んだ順にしか外せないので、後の人が取り消すのを待つことになります。</p>
-        {% endif %}
 
       {% elif mode == "silent_ready" %}
         <p>あなたに割り当てられた押印枠はありません。確認した記録として、紙面に出ない署名を残せます。</p>
@@ -30,9 +31,6 @@
 
       {% elif mode == "silent_done" %}
         <p>この書類は確認済みとして記録されています。</p>
-        {% if not revocable %}
-          <p class="note">あなたの後に誰かが署名しているため、いまは取り消せません。</p>
-        {% endif %}
 
       {% else %}
         <p>このアカウントには、この書類を見る権限がありません。Drive の共有設定を確認してください。</p>
@@ -55,7 +53,7 @@
 
     {% elif mode == "role_ready" %}
       <img class="seal" src="/seal/preview.png" alt="押される印影">
-      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}" enctype="multipart/form-data">
+      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}" enctype="multipart/form-data" data-inplace>
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit">{{ role }}として署名する</button>
         <details>
@@ -66,19 +64,24 @@
       </form>
 
     {% elif mode == "silent_ready" %}
-      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
+      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}" data-inplace>
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit">確認したことを記録する</button>
       </form>
-    {% endif %}
 
-    {% if revocable %}
-      <img class="seal" src="/seal/preview.png" alt="押した印影">
-      <form method="post" action="/s/{{ file_id }}/revoke?m={{ mac }}">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button type="submit" class="quiet">{{ revocable }} の署名を取り消す</button>
-      </form>
-      <p class="note">押し間違えたときに使います。あなたが最後の押し手のあいだだけ取り消せます。</p>
+    {% elif mode in ["role_done", "silent_done"] %}
+      {% if mode == "role_done" %}<img class="seal" src="/seal/preview.png" alt="押した印影">{% endif %}
+      {% if revocable %}
+        <form method="post" action="/s/{{ file_id }}/revoke?m={{ mac }}" data-inplace>
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="quiet">署名を取り消す</button>
+        </form>
+        <p class="note">押し間違えたときに使います。あなたが最後の押し手のあいだだけ取り消せます。</p>
+      {% else %}
+        {# 押せない理由が見えるように、ボタンは消さずに灰色のまま残す #}
+        <button type="button" class="quiet" disabled>署名を取り消す</button>
+        <p class="note">あなたの後に誰かが署名しているため、いまは取り消せません。積んだ順にしか外せないので、後の人が取り消すのを待つことになります。</p>
+      {% endif %}
     {% endif %}
   </aside>
 </div>
@@ -92,5 +95,6 @@
     <p class="note"><a href="/s/{{ file_id }}/document.pdf?m={{ mac }}" target="_blank" rel="noopener">PDF を開く</a></p>
   </section>
   <script type="module" src="/static/viewer.js"></script>
+  <script src="/static/sign.js"></script>
 {% endif %}
 {% endblock %}

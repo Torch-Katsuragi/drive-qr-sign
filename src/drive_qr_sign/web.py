@@ -181,6 +181,14 @@ def create_app(
         field, signer = found
         return field if signer.strip().lower() == email.strip().lower() else None
 
+    def _back_to_sign_page(file_id: str, mac: str) -> RedirectResponse:
+        """押した後・取り消した後は、同じ画面に戻す。
+
+        「署名しました」という専用の画面は作らない。押した結果は書類とボタンの
+        状態を見れば分かるので、読む画面が1枚増えるだけになる。
+        """
+        return RedirectResponse(f"/s/{file_id}?m={mac}", status_code=303)
+
     def _reader(request: Request, file_id: str, mac: str) -> bytes:
         """書類の中身を見せてよい相手にだけ PDF を返す。
 
@@ -237,14 +245,14 @@ def create_app(
             },
         )
 
-    @app.post("/s/{file_id}/sign", response_class=HTMLResponse)
+    @app.post("/s/{file_id}/sign")
     def do_sign(
         request: Request,
         file_id: str,
         m: str = "",
         csrf: str = Form(""),
         seal_image: UploadFile | None = File(None),
-    ) -> HTMLResponse:
+    ) -> RedirectResponse:
         # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
         # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
         # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
@@ -292,7 +300,7 @@ def create_app(
                 reason="確認",
             )
         signed_pdf = signed.getvalue()
-        stored_as = document_store.store_signed(file_id, signed_pdf)
+        document_store.store_signed(file_id, signed_pdf)
 
         # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
         # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む
@@ -306,20 +314,10 @@ def create_app(
             ),
         )
 
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="done.html",
-            context={
-                "file_id": file_id,
-                "role": role,
-                "email": email,
-                "mode": mode,
-                "stored_as": stored_as,
-            },
-        )
+        return _back_to_sign_page(file_id, m)
 
-    @app.post("/s/{file_id}/revoke", response_class=HTMLResponse)
-    def do_revoke(request: Request, file_id: str, m: str = "", csrf: str = Form("")) -> HTMLResponse:
+    @app.post("/s/{file_id}/revoke")
+    def do_revoke(request: Request, file_id: str, m: str = "", csrf: str = Form("")) -> RedirectResponse:
         """押し間違えたときに、自分の署名を外す。
 
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
@@ -345,7 +343,7 @@ def create_app(
         except NotRevocable as exc:
             raise HTTPException(status_code=409, detail=str(exc))
 
-        stored_as = document_store.store_signed(file_id, reverted)
+        document_store.store_signed(file_id, reverted)
         # 押したときに記録を送っているなら、取り消しも同じ場所に残す。
         # 送ったメールは消せないので、事実の側を揃える
         notify_quietly(
@@ -359,17 +357,7 @@ def create_app(
             ),
         )
 
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="revoked.html",
-            context={
-                "file_id": file_id,
-                "mac": m,
-                "email": email,
-                "field": field,
-                "stored_as": stored_as,
-            },
-        )
+        return _back_to_sign_page(file_id, m)
 
     @app.get("/seal/preview.png")
     def seal_preview(request: Request) -> Response:

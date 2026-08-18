@@ -377,13 +377,47 @@ def test_signer_can_take_back_their_own_signature(env):
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]
 
     body = client.get(_url()).text
-    assert "の署名を取り消す" in body
+    assert "署名を取り消す" in body
 
     response = client.post(f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert response.status_code == 200
     signed = store_dir / f"{FILE_ID}.signed.pdf"
     assert list_signature_fields(signed, filled=True) == []
     assert list_signature_fields(signed, filled=False) == ["組合長", "参事", "担当"]
+
+
+def test_signing_comes_back_to_the_same_page(env):
+    """押した後に「署名しました」という画面へ移らず、同じ画面のボタンが入れ替わること。
+
+    完了画面は読むだけで、閉じる操作をもう1回させる。押した結果は書類とボタンを
+    見れば分かるので置かない。
+    """
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    csrf = _extract_csrf(client.get(_url()).text)
+
+    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    assert response.status_code == 200
+    assert str(response.url).endswith(_url())  # 303 で署名ページへ戻っている
+    body = response.text
+    assert "組合長として署名する" not in body  # 押すボタンは消えて
+    assert "署名を取り消す" in body  # 同じ場所が取り消しに変わる
+    assert 'id="document"' in body  # 書類も一緒に出ている
+
+
+def test_the_revoke_button_stays_greyed_out_when_locked(env):
+    """取り消せないときもボタンは残す。消すと「取り消せる場所がある」ごと見えなくなる。"""
+    client, identity, _ = env
+    for who in ("kumiaicho@example.test", "soumu@example.test"):
+        identity.email = who
+        csrf = _extract_csrf(client.get(_url()).text)
+        client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+
+    identity.email = "kumiaicho@example.test"
+    body = client.get(_url()).text
+    assert "disabled" in body
+    assert "いまは取り消せません" in body
 
 
 def test_cannot_take_back_once_someone_signed_after_you(env):
