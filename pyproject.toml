@@ -24,6 +24,8 @@ dependencies = [
     "jinja2>=3.1",
     "itsdangerous>=2.2",
     "python-multipart>=0.0.9",
+    # 署名鍵を Cloud KMS に置く場合（鍵をプロセスに載せない）
+    "google-cloud-kms>=2.21",
     # Google（OIDC・Drive）
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",

@@ -6,7 +6,8 @@
 
     QR_SECRET          QR の HMAC 鍵
     SESSION_SECRET     ログインのセッションクッキーの署名鍵
-    SIGNING_KEY_PEM    署名鍵（PEM）
+    SIGNING_KEY_KMS    署名鍵を Cloud KMS に置く場合の鍵バージョン名。あるとこちらが優先
+    SIGNING_KEY_PEM    署名鍵（PEM）。KMS を使わない場合
     SIGNING_CERT_PEM   署名証明書（PEM）
     OAUTH_CLIENT_JSON  OAuth クライアント（コンソールの JSON そのまま）
     SIGNERS_JSON       署名者名簿 {"a@example.com": {"role": "組合長", "seal_text": "松本"}}
@@ -34,6 +35,7 @@ from .drive import DriveDocumentStore, build_default_service
 from .google_identity import BASE_SCOPES, ClientSecrets, GoogleIdentityProvider
 from .identity import SignerDirectory, SignerEntry
 from .notify import GmailNotifier, ResendNotifier, build_gmail_service_from_info
+from .kms import load_kms_signer
 from .signing import FREE_TSA_URL, load_signer_from_pem
 from .web import create_app
 
@@ -95,6 +97,23 @@ def _configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
 
+def _signer():
+    """署名鍵。KMS に置いてあればそちら、無ければ PEM を読む。
+
+    ⚠PEM は鍵そのものがプロセスのメモリに載る。アプリを取られたら鍵ごと持ち出せる。
+    KMS なら出てこない（できるのは「署名して」と頼むことだけで、その記録も残る）。
+    """
+    key_version = os.environ.get("SIGNING_KEY_KMS")
+    if key_version:
+        logging.getLogger(__name__).info("署名鍵: KMS %s", key_version)
+        return load_kms_signer(key_version, _required("SIGNING_CERT_PEM").encode("utf-8"))
+    logging.getLogger(__name__).warning("署名鍵: PEM（鍵がプロセスに載る。KMS に移せる）")
+    return load_signer_from_pem(
+        _required("SIGNING_KEY_PEM").encode("utf-8"),
+        _required("SIGNING_CERT_PEM").encode("utf-8"),
+    )
+
+
 def build() -> "object":
     _configure_logging()
     # 起動したことを1行残す。押すのが遅かったとき、コンテナの起動待ちだったのか
@@ -105,10 +124,7 @@ def build() -> "object":
         document_store=store,
         signer_directory=_signer_directory(),
         identity_provider=_identity_provider(),
-        signer=load_signer_from_pem(
-            _required("SIGNING_KEY_PEM").encode("utf-8"),
-            _required("SIGNING_CERT_PEM").encode("utf-8"),
-        ),
+        signer=_signer(),
         qr_secret=_required("QR_SECRET").encode("utf-8"),
         tsa_url=os.environ.get("TSA_URL", FREE_TSA_URL),
         can_read=store.can_read,

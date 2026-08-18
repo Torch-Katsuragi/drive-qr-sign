@@ -92,6 +92,34 @@ PDF に埋め込むことになるので、ここが検疫にあたる。透過�
 署名済みは**原本の新しい版として書き戻す**。別ファイルに逃がすと原本と署名済みが割れて、
 QR やリンクが指す原本にいつまでも署名が入らない。
 
+### 署名鍵は Cloud KMS に置く
+
+鍵を PEM で渡すと、アプリのプロセスに鍵そのものが載る。アプリを取られたら鍵ごと
+持ち出され、こちらの知らないところで無制限に署名を作れる。KMS に置くと鍵は出てこない。
+アプリにできるのは「このハッシュに署名して」と頼むことだけで、使った記録は
+Cloud Audit Logs に残り、権限を切れば止まる。
+
+```powershell
+gcloud services enable cloudkms.googleapis.com --project <プロジェクト>
+gcloud kms keyrings create drive-qr-sign --location asia-northeast1 --project <プロジェクト>
+gcloud kms keys create signing --location asia-northeast1 --keyring drive-qr-sign `
+  --purpose asymmetric-signing --default-algorithm rsa-sign-pkcs1-3072-sha256 --project <プロジェクト>
+gcloud kms keys add-iam-policy-binding signing --keyring drive-qr-sign --location asia-northeast1 `
+  --member "serviceAccount:<実行SA>" --role roles/cloudkms.signerVerifier --project <プロジェクト>
+
+python tools\make_kms_cert.py <鍵バージョンのリソース名> --out secrets\kms-cert.pem
+```
+
+証明書は鍵とは別物で、公開情報。鍵が KMS から出てこないので、**証明書の自己署名も
+KMS に頼む**（普通のライブラリは「秘密鍵を渡してくれれば署名する」形しか持たない）。
+あとは `SIGNING_KEY_KMS`（鍵バージョンのリソース名）と `SIGNING_CERT_PEM` を渡せば、
+PEM の鍵は要らなくなる。
+
+> [!WARNING] 鍵のアルゴリズムとダイジェストは揃える
+> KMS の鍵は `RSA_SIGN_PKCS1_3072_SHA256` のように1つに固定されている。
+> 何も言わないと pyHanko は鍵長からダイジェストを選び、3072bit に SHA-384 を当てて
+> KMS に断られる。`load_kms_signer(digest_algorithm=...)` で鍵に合わせる。
+
 > [!WARNING] サービスアカウントが乗っ取られたときの被害範囲
 > 共有されている書類は読まれるし上書きもされる。これは署名をサーバでやる以上避けられない。
 > 狭めるのは ①共有を回覧期間に限る ②署名鍵は KMS に置いて持ち出せなくする
