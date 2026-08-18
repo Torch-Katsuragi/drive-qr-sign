@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -29,12 +30,13 @@ from .documents import DocumentNotFound, DocumentStore
 from .identity import IdentityProvider, SignerDirectory, silent_field_name
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .qr import InvalidPayload, verify_mac
-from .seal import MAX_UPLOAD_BYTES, UnusableImage
-from .seal_store import SealStore
+from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
 from .signing import FREE_TSA_URL, list_signature_fields, sign_field, sign_invisible
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 STATIC_DIR = Path(__file__).parent / "static"
+
+logger = logging.getLogger(__name__)
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
 MODE_LOGIN = "login"  # 未ログイン
@@ -65,7 +67,6 @@ def create_app(
     signer,
     qr_secret: bytes,
     tsa_url: str | None = FREE_TSA_URL,
-    seal_store: SealStore | None = None,
     can_read=None,
     notifier: Notifier | None = None,
 ) -> FastAPI:
@@ -86,20 +87,33 @@ def create_app(
     if login_routes is not None:
         app.include_router(login_routes)
 
-    def _seal_for(email: str):
-        """印影をどこから取るか。
+    def _stamp_for(request: Request, email: str, uploaded: bytes | None):
+        """押印枠に押す絵を決める。
 
-        1. 本人が登録した画像（アップロード、または Google のアイコン）
+        1. その場でアップロードされた画像（この署名かぎり。保管しない）
         2. 名簿に組織が指定した画像
-        3. 名簿の文字から生成（無ければ役職から生成）
+        3. Google アカウントのアイコン
+        4. 名簿の文字から生成した丸印（無ければ役職から）
 
-        生成はいちばん後ろ。本人が用意した絵があるなら、そちらが本人らしい。
+        どれになっても、上にメールアドレスを添えて返す。アイコンや写真は
+        紙の上で誰の印か分からないため（seal.compose_stamp）。
         """
-        if seal_store is not None:
-            own = seal_store.get(email)
-            if own is not None:
-                return own
-        return signer_directory.seal_for(email)
+        seal = None
+        if uploaded:
+            seal = prepare_uploaded(uploaded)
+        if seal is None:
+            seal = signer_directory.seal_for(email)
+        if seal is None:
+            picture = _google_picture(request)
+            if picture:
+                try:
+                    seal = prepare_uploaded(_fetch_picture(picture))
+                except Exception:
+                    logger.exception("アイコンを取れなかった: %s", email)
+        if seal is None:
+            # 名簿に何も無い人。アドレスの頭文字で最低限の見た目を作る
+            seal = render_seal(email.strip()[:1].upper() or "?")
+        return compose_stamp(seal, email)
 
     def _google_picture(request: Request) -> str | None:
         """ログインしている Google アカウントのアイコン URL。
@@ -200,7 +214,16 @@ def create_app(
         )
 
     @app.post("/s/{file_id}/sign", response_class=HTMLResponse)
-    def do_sign(request: Request, file_id: str, m: str = "", csrf: str = Form("")) -> HTMLResponse:
+    def do_sign(
+        request: Request,
+        file_id: str,
+        m: str = "",
+        csrf: str = Form(""),
+        seal_image: UploadFile | None = File(None),
+    ) -> HTMLResponse:
+        # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
+        # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
+        # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
         pdf = _load(file_id, m)
 
         email = identity_provider.verified_email(request)
@@ -215,6 +238,13 @@ def create_app(
         if mode not in SIGNABLE:
             raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
 
+        uploaded = seal_image.file.read() if seal_image is not None else None
+        if uploaded:
+            try:
+                prepare_uploaded(uploaded)  # 押す前に検疫を通す
+            except UnusableImage as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
         signed = io.BytesIO()
         if mode == MODE_ROLE_READY:
             sign_field(
@@ -225,7 +255,7 @@ def create_app(
                 tsa_url=tsa_url,
                 signer_name=email,
                 reason=f"{role}として承認",
-                seal=_seal_for(email),
+                seal=_stamp_for(request, email, uploaded),
             )
         else:
             sign_invisible(
@@ -264,75 +294,15 @@ def create_app(
             },
         )
 
-    # --- 印影の登録 ---------------------------------------------------------
-    # 押印枠に何を出すかは本人が選べる。生成した丸印はあくまで、何も用意しなかった人向け。
-
-    def _require_signer(request: Request) -> str:
+    @app.get("/seal/preview.png")
+    def seal_preview(request: Request) -> Response:
+        """いま押されることになる絵。署名ページに出す。"""
         email = identity_provider.verified_email(request)
         if not email:
             raise HTTPException(status_code=401, detail="ログインが必要です")
-        return email
-
-    def _check_seal_csrf(email: str, csrf: str) -> None:
-        if not hmac.compare_digest(_csrf_token(qr_secret, "seal", email), csrf):
-            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
-        if seal_store is None:
-            raise HTTPException(status_code=404, detail="印影の登録は使えません")
-
-    @app.get("/seal", response_class=HTMLResponse)
-    def seal_page(request: Request) -> HTMLResponse:
-        email = _require_signer(request)
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="seal.html",
-            context={
-                "email": email,
-                "can_register": seal_store is not None,
-                "registered": seal_store is not None and seal_store.get(email) is not None,
-                "google_picture": _google_picture(request),
-                "csrf": _csrf_token(qr_secret, "seal", email),
-            },
-        )
-
-    @app.get("/seal/preview.png")
-    def seal_preview(request: Request) -> Response:
-        """いま押されることになる印影。登録・生成のどちらであっても同じ絵が出る。"""
-        email = _require_signer(request)
-        seal = _seal_for(email)
-        if seal is None:
-            raise HTTPException(status_code=404, detail="印影がありません")
         buffer = io.BytesIO()
-        seal.save(buffer, format="PNG")
-        return Response(buffer.getvalue(), media_type="image/png")
-
-    @app.post("/seal")
-    async def upload_seal(
-        request: Request, csrf: str = Form(""), image: UploadFile = File(...)
-    ) -> RedirectResponse:
-        email = _require_signer(request)
-        _check_seal_csrf(email, csrf)
-        try:
-            seal_store.put(email, await image.read())
-        except UnusableImage as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        return RedirectResponse("/seal", status_code=303)
-
-    @app.post("/seal/google")
-    def use_google_picture(request: Request, csrf: str = Form("")) -> RedirectResponse:
-        email = _require_signer(request)
-        _check_seal_csrf(email, csrf)
-        url = _google_picture(request)
-        if not url:
-            raise HTTPException(status_code=400, detail="アイコンを取得できません")
-        seal_store.put(email, _fetch_picture(url))
-        return RedirectResponse("/seal", status_code=303)
-
-    @app.post("/seal/delete")
-    def delete_seal(request: Request, csrf: str = Form("")) -> RedirectResponse:
-        email = _require_signer(request)
-        _check_seal_csrf(email, csrf)
-        seal_store.delete(email)
-        return RedirectResponse("/seal", status_code=303)
+        _stamp_for(request, email, None).save(buffer, format="PNG")
+        return Response(buffer.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store"})
 
     return app
 

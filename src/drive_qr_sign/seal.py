@@ -179,3 +179,73 @@ def prepare_uploaded(data: bytes, size: int = 512) -> Image.Image:
         ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
         image.putalpha(mask)
     return image
+
+
+# 押印枠の上部に置くメールアドレスの帯。押印枠は正方形なので、その割合で切る
+CAPTION_BAND = 0.16
+# 中立な灰色にする。青みを入れると「紙面に青は出ない」という不変条件が崩れ、
+# 既定スタンプ（紫のアート）が混ざっていないことを色で判定できなくなる
+CAPTION_COLOR = (85, 85, 85)
+
+
+def compose_stamp(seal: Image.Image, caption: str, size: int = 512) -> Image.Image:
+    """押印枠に入れる絵を組み立てる。上に小さくメールアドレス、その下に印影。
+
+    アカウントのアイコンをそのまま押すと、紙の上では誰の印か分からない。
+    印影が生成した丸印なら姓が読めるが、写真では読めない。
+    だから誰のものかを紙の上で言えるように、アドレスを添える。
+
+    > [!NOTE] 紙面は従来と同じ、という柱からの小さな逸脱
+    > 押印枠の中に文字が1行増える。それでも入れるのは、
+    > 「誰が押したか」が紙を見て分かることのほうが実務上効くため。
+    """
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+    band = int(size * CAPTION_BAND)
+    _draw_caption(canvas, caption, band)
+
+    # 残りに印影を収める。正方形を保ったまま中央へ
+    room = size - band
+    fitted = seal.resize((room, room), Image.LANCZOS)
+    canvas.paste(fitted, ((size - room) // 2, band), fitted)
+    return canvas
+
+
+def _draw_caption(canvas: Image.Image, caption: str, band: int) -> None:
+    """帯にアドレスを描く。入り切らなければ @ で折って2行にする。"""
+    draw = ImageDraw.Draw(canvas)
+    width = canvas.width
+    lines = [caption]
+    if _text_width(caption, band) > width:
+        local, _, domain = caption.partition("@")
+        if domain:
+            lines = [local + "@", domain]
+
+    line_height = band / len(lines)
+    for index, line in enumerate(lines):
+        font = _caption_font(line, width * 0.96, line_height * 0.92)
+        draw.text(
+            (width / 2, line_height * (index + 0.5)),
+            line,
+            font=font,
+            fill=CAPTION_COLOR + (255,),
+            anchor="mm",
+        )
+
+
+def _text_width(text: str, height: float) -> float:
+    font = ImageFont.truetype(str(DEFAULT_FONT), max(4, int(height)))
+    left, _, right, _ = font.getbbox(text)
+    return right - left
+
+
+def _caption_font(text: str, max_width: float, max_height: float) -> ImageFont.FreeTypeFont:
+    """幅にも高さにも収まる最大の字面。アドレスは長いので、たいてい幅で決まる。"""
+    size = max(4, int(max_height))
+    font = ImageFont.truetype(str(DEFAULT_FONT), size)
+    left, _, right, _ = font.getbbox(text)
+    actual = right - left
+    if actual > max_width:
+        size = max(3, int(size * max_width / actual))
+        font = ImageFont.truetype(str(DEFAULT_FONT), size)
+    return font

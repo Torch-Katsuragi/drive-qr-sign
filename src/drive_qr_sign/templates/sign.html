@@ -49,11 +49,15 @@
 
     {% elif mode == "role_ready" %}
       <img class="seal" src="/seal/preview.png" alt="押される印影">
-      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">
+      <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}" enctype="multipart/form-data">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit">{{ role }}として署名する</button>
+        <details>
+          <summary>別の画像で押す</summary>
+          <input type="file" name="seal_image" accept="image/*">
+          <p class="note">この署名にだけ使います。保存はしません。</p>
+        </details>
       </form>
-      <p class="note"><a href="/seal">印影を変える</a></p>
 
     {% elif mode == "silent_ready" %}
       <form method="post" action="/s/{{ file_id }}/sign?m={{ mac }}">

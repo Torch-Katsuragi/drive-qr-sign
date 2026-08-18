@@ -4,8 +4,8 @@
 これが崩れると、未審査アプリの警告画面を無料 Gmail の署名者に見せることになり、
 導入できる組織が激減する（docs/DESIGN.md）。
 
-`profile` を足すと ID トークンに `picture` が乗り、アカウントのアイコンを印影に使えるようになる。
-非センシティブなので警告画面は増えないが、既定では要求しない。使いたい組織だけ `scopes` で足す。
+`profile` も要求する。ID トークンに `picture` が乗り、アカウントのアイコンを印影に使えるため。
+非センシティブなので未審査アプリの警告画面は増えない。アイコンが要らない組織は `scopes` で外せる。
 
 アプリが信じるのは「Google が検証済みだと言っているメールアドレス」だけで、
 そこから先（誰が押印枠を持つか）は署名者名簿が決める。
@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 
-BASE_SCOPES = ("openid", "email")
+# profile を含めるのは、アカウントのアイコンを印影の既定にしているため。
+# 非センシティブなので未審査アプリの警告画面は増えない
+BASE_SCOPES = ("openid", "email", "profile")
 SESSION_COOKIE = "signer"
 FLOW_COOKIE = "oauth_flow"
 SESSION_MAX_AGE = 12 * 60 * 60  # 半日。回覧1件を押すには十分で、共有端末に残り続けない長さ

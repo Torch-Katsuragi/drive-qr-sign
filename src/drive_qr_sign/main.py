@@ -17,9 +17,9 @@
 
 Drive は Cloud Run に紐づいたサービスアカウントで触るので、鍵ファイルは持たない。
 
-印影の登録（`/seal`）は無効。Cloud Run のファイルシステムは使い捨てで、
-インスタンスはいつ入れ替わってもおかしくない（起動しっぱなしにしても同じ）。
-置き場を Drive などに持たせるまでは「名簿の文字から生成」だけにする。
+印影は保管しない。アカウントのアイコンか、名簿の文字から生成した丸印を使い、
+どうしても別の絵で押したい人はその署名のときだけアップロードする。
+置き場を持たないので、Cloud Run のファイルシステムが使い捨てであることを気にせずに済む。
 """
 
 from __future__ import annotations
@@ -86,8 +86,6 @@ def build() -> "object":
         qr_secret=_required("QR_SECRET").encode("utf-8"),
         tsa_url=os.environ.get("TSA_URL", FREE_TSA_URL),
         can_read=store.can_read,
-        # 印影の登録先が無いので、生成した丸印だけになる
-        seal_store=None,
         notifier=_notifier(),
     )
 

@@ -74,17 +74,21 @@ def test_login_redirects_to_google_with_pkce_and_nonce():
     assert query["code_challenge"] and query["nonce"] and query["state"]
 
 
-def test_only_openid_and_email_are_requested():
-    """Drive スコープを要求しないことが、この設計の要（docs/DESIGN.md）。"""
+def test_drive_scopes_are_never_requested():
+    """Drive スコープを要求しないことが、この設計の要（docs/DESIGN.md）。
+
+    profile は含む。アカウントのアイコンを印影の既定にしているため（非センシティブ）。
+    """
     provider = make_provider({})
     _, query = start_login(client_for(provider), provider)
-    assert query["scope"] == ["openid email"]
-
-
-def test_profile_scope_is_opt_in():
-    provider = make_provider({}, scopes=("openid", "email", "profile"))
-    _, query = start_login(client_for(provider), provider)
     assert query["scope"] == ["openid email profile"]
+    assert "drive" not in query["scope"][0]
+
+
+def test_icon_can_be_turned_off_by_dropping_profile():
+    provider = make_provider({}, scopes=("openid", "email"))
+    _, query = start_login(client_for(provider), provider)
+    assert query["scope"] == ["openid email"]
 
 
 def test_successful_login_sets_the_session():
