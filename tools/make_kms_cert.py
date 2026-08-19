@@ -29,8 +29,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("key_version", help="KMS の鍵バージョンのリソース名")
     parser.add_argument("--out", default="secrets/kms-cert.pem", help="出力先")
-    parser.add_argument("--common-name", default="ねむりぎ工房 署名")
-    parser.add_argument("--organization", default="ねむりぎ工房")
+    # 証明書に載る名前は導入先ごとに違う。既定値を置くと、直し忘れが証明書に焼き付く
+    parser.add_argument("--common-name", required=True, help="証明書の CN（例: 〇〇組合 署名）")
+    parser.add_argument("--organization", required=True, help="証明書の O（例: 〇〇組合）")
     parser.add_argument("--days", type=int, default=1095, help="有効期間（日）")
     args = parser.parse_args()
 
