@@ -1,290 +1,53 @@
 # drive-qr-sign
 
-> **In English** — Keep passing the paper around. Replace only the stamp.
->
-> Japanese offices circulate printed documents and approve them with a personal seal (*hanko*).
-> This tool leaves that ritual intact and swaps out one gesture: instead of inking a stamp,
-> each approver scans the QR on the page, signs in with the Google account they already have,
-> and taps once. A PAdES signature and an RFC 3161 timestamp land inside the PDF, and the original
-> in Google Drive is updated in place — same file, same link, one more revision.
->
-> No new accounts. No per-seat subscription. No moving documents into someone else's system.
-> The evidence lives in the PDF, so signed documents outlive this app.
->
-> **The documentation and code comments are in Japanese**, because the problem is.
+紙の回覧はそのままに、押印だけを電子署名に置き換える。
+書類は Google Drive に置いたまま、署名者はいま使っている Google アカウントで押す。
 
-**紙の回覧は、続けていい。変えるのは、判子を押す一手だけ。**
-
-アカウントは増やさない。書類は動かさない。月額も要らない。
-すでに組織にあるもの——Google アカウントと、Drive に置いてある書類——の上に、署名だけを載せる。
+> **In English** — Keep circulating the paper; replace only the seal. Approvers scan the QR printed
+> on the page, sign in with the Google account they already have, and tap once. A PAdES signature
+> and an RFC 3161 timestamp go into the PDF, and the original in Google Drive is updated in place.
+> No new accounts, no per-seat subscription, no moving documents elsewhere.
+> Docs and code comments are in Japanese.
 
 ```
-書類PDFをDriveに置く → QR付きで印刷して、いつもどおり紙で回覧
-  → 読み終えた人がQRをスマホで読む → Googleでログイン → 中身を確認してワンタップ
-  → PAdES署名＋タイムスタンプが入り、Driveの原本が新しい版として更新される
+書類PDFをDriveに置く → QR付きで印刷して紙で回覧 → 読んだ人がQRを読む
+  → Googleでログイン → 中身を確認してワンタップ → PAdES署名＋タイムスタンプ
+  → Driveの原本が新しい版として更新される
 ```
 
-判子は朱肉から離れるが、回覧板は回り続ける。
-そして証跡は PDF そのものに残るので、**このアプリを捨てた後も、署名済み PDF 単体で検証できる**。
+証跡は PDF に埋まる。このアプリを捨てても、署名済み PDF 単体で検証できる。
 
-## なぜ既存のサービスではないのか
+## 既存の電子契約サービスとの違い
 
-押印をやめる話は、たいてい同じところで止まる。
-
-全員ぶんのアカウントを配れない。書類の置き場が二重になる。月に数件の回覧に、
-席数ぶんの月額は見合わない。そして、そのサービスをやめた日に何が手元に残るのかが、
-誰にも分からない。
-
-止まる理由は機能ではなく、**組織の外に新しい場所を作らせようとすること**にある。
-だからこの道具は、新しい場所を作らない。
-
-|  | 一般的な電子契約サービス | drive-qr-sign |
+|  | 電子契約サービス | drive-qr-sign |
 |---|---|---|
-| 署名者のアカウント | そのサービスに新規登録 | **いま使っている Google アカウント** |
-| 署名者に求める権限 | サービスの利用同意 | **メールアドレスの確認だけ**（Drive の権限を要求しない） |
-| 書類の置き場 | サービス側へ移す | **Drive のまま**。file id も URL も変わらない |
-| 誰が見られるか | サービス内で招待し直す | **Drive の共有設定そのもの**。二重管理が生まれない |
-| 費用 | 席数 × 月額 | **実費のみ**。人数で増えない |
-| 証跡 | サービスの管理画面 | **PDF 自体**（PAdES + RFC 3161）。このアプリを廃止しても検証できる |
-| 紙の回覧 | やめる前提 | **続けられる**。押印の一手だけを置き換える |
+| 署名者のアカウント | 新規登録 | いまの Google アカウント |
+| 署名者に求める権限 | サービスの利用同意 | メールアドレスの確認だけ |
+| 書類の置き場 | サービス側へ移す | Drive のまま。file id も変わらない |
+| 閲覧できる人 | サービス内で招待 | Drive の共有設定 |
+| 費用 | 席数 × 月額 | 実費のみ。人数で増えない |
+| 証跡 | サービスの管理画面 | PDF 自体（PAdES + RFC 3161） |
+| 紙の回覧 | やめる前提 | 続けられる |
 
-### 実際にかかる金額
+費用の実費は、Cloud Run が回覧程度なら無料枠、Cloud KMS の鍵が月に数セント、
+タイムスタンプは freeTSA なら 0 円。認定タイムスタンプ局と AATL 証明書を使う場合だけ別。
 
-| | 目安 |
-|---|---|
-| Cloud Run | 回覧程度の頻度なら無料枠に収まる |
-| Cloud KMS（署名鍵） | 鍵1本で月に数セント + 署名10,000回ごとに $0.03 |
-| タイムスタンプ | freeTSA なら 0 円（認定タイムスタンプ局を使うなら有料） |
-| 記録メール（任意） | 送信サービスの無料枠（月3,000通程度） |
+## 何をしないか
 
-合計は**月あたり数十円のオーダー**。しかも署名する人が10人に増えても、金額は増えない。
-席数で課金されないというのは、そういうことだ。
-
-金額が跳ねるのは、認定タイムスタンプ局と AATL 証明書を選んだときだけ。
-それは「どこまでの証明力を買うか」という別の判断になる（→ [docs/DESIGN.md](docs/DESIGN.md)）。
-
-## 何が付いてきて、何は自分でやるのか
-
-名前に QR と入っているが、**QR は入口にすぎない**。主役は、紙の回覧をやめないことのほうだ。
-だから「何をやってくれないか」も先に書いておく。
-
-- ✅ 署名ページ（QR を開く → 自分の欄 → 中身を確認 → ワンタップ）
-- ✅ PAdES 署名 + タイムスタンプ + Drive の原本への書き戻し
-- ✅ Typst で書いた書類なら、**QR の生成と押印枠の埋め込みまで**（`tools/build_document.py`）
-- ⚠ Word や既存の帳票から作っている場合、**QR を紙面に載せるのは自分の工程**になる。
-  必要なのは「その書類の署名ページの URL を QR にすること」だけで、
-  空の署名フィールドはアプリが署名時に作る（押印枠に絵を出したいときだけ座標が要る）
-- ❌ ワークフロー管理（誰が未押印か、催促、期限）は持たない。それは紙の回覧板と口頭がやる
-
-## 他と違うところ
-
-作りのうえで効いているのは、この4つ。
-
-- **署名者に Drive のスコープを要求しない**。同意画面に出るのは「メールアドレスの確認」だけで、
-  未審査アプリの警告が出ない。書類を取りに行くのはアプリのサービスアカウントで、
-  誰に見せてよいかは Drive の共有設定を読んで決める
-- **PDF が署名欄を自己記述する**。押印枠の座標は書類側（Typst の metadata）に持たせるので、
-  書類の種類が増えてもアプリを直さない
-- **署名鍵をアプリが持たない**。Cloud KMS の中から出てこないので、アプリを取られても
-  鍵は持ち出せない。署名した記録は Cloud Audit Logs に残る
-- **証跡がアプリの外にも出る**（任意）。署名した本人へ、署名済み PDF のハッシュ入りの控えを
-  ドメイン署名（DKIM）付きで送る。送信側と受信側の両方に、一方だけでは消せない記録が残る
+- **QR を紙面に載せる工程**は、Typst 以外で書類を作っているなら自分でやる
+  （必要なのは署名ページの URL を QR にすることだけ）
+- **ワークフロー管理**（未押印者の一覧・催促・期限）は持たない
 
 ## 現状
 
-**動くものが本番に載っている。ただし、まだ誰の回覧も1件も回していない。**
+動くものが本番に載っているが、まだ実運用の回覧は1件も回していない。
 
-書いた本人が実物の Drive で通しただけで、実運用のテストはこれから。
-下の表は「動く」と書いてあるが、それは開発者が確かめた範囲での話だと思って読んでほしい。
-
-| | |
-|---|---|
-| PAdES 署名 + RFC 3161 タイムスタンプ | 動く |
-| 署名ページ（QR → 自分の欄 → 中身を確認 → 署名 → Drive へ書き戻し） | 動く |
-| 複数人が順に押しても、前の人の署名が残る | 動く |
-| 押し間違いの取り消し（自分が最後の押し手のあいだ） | 動く |
-| 押印枠を持たない人の不可視署名（読了の記録） | 動く |
-| 印影（アカウントのアイコン／自動生成／その場でアップロード） | 動く |
-| Google ログイン（OIDC・PKCE）と、署名するアカウントの切り替え | 動く |
-| Drive 連携（取得・原本への書き戻し・共有設定での閲覧判定） | 動く |
-| 署名鍵を Cloud KMS に置く | 動く |
-| 署名の記録メール（DKIM 付き・任意） | 動く |
-| Typst の押印枠 → 空署名フィールドの自動注入・QR の焼き込み | 動く |
-
-試す前に知っておいてほしいこと。
-
-- 証明書は自己署名なので、**Acrobat の署名パネルに「信頼されていない」警告が出る**。
-  組織の中で回すなら、その証明書を1回信頼登録すれば消える。外に出す書類で警告を消すには
-  AATL 掲載の認証局の証明書が要る
-- 同時に押されたときの上書きは、書類ごとの直列化と書き戻し前の突き合わせで防いでいるが、
-  **`--max-instances=1` での運用が前提**（→ [docs/DEPLOY.md](docs/DEPLOY.md)）
-- 押してから画面に反映されるまで**約5.5秒**（内訳: Drive 取得 1.7秒 / 署名とタイムスタンプ 1.7秒 /
-  Drive 書き戻し 2.1秒）。書き戻しを待たずに返す実装も試したが、
-  「押せたように見えて Drive には無い」状態を作らないために同期のままにしている
+- 証明書は自己署名。Acrobat の署名パネルに警告が出る（組織内なら1回信頼登録すれば消える）
+- `--max-instances=1` での運用が前提（同時に押されたときの上書きを防ぐため）
+- 押してから画面に反映されるまで約5.5秒
 - 署名者名簿の更新にデプロイが要る
 
-設計の詳細は [docs/DESIGN.md](docs/DESIGN.md)、導入手順は [docs/DEPLOY.md](docs/DEPLOY.md)。
-
-## 仕組みのかなめ
-
-### PDF が署名欄を自己記述する
-
-署名欄がどこにあるかをアプリが覚えていると、書類が1種類増えるたびにアプリを直すことになる。
-支出調書、稟議書、復命書——増えるたびに開発者を呼ぶ道具は、現場では使われなくなる。
-
-だから位置は書類の側に持たせる。書類が自分で「ここに組合長の枠がある」と名乗る。
-
-```typst
-#let sig-anchor(role, w: 24mm, h: 24mm) = box(width: w, height: h, stroke: 0.5pt + gray)[
-  #context [
-    #let p = here().position()
-    #metadata((role: role, page: p.page, x: p.x.pt(), y: p.y.pt(), w: w.pt(), h: h.pt())) <sig-anchor>
-  ]
-]
-```
-
-役職はラベル名（`<sig-組合長>`）ではなく metadata の中身に入れる。
-ラベル名に埋めると、引く側が役職名を先に知っていないと `typst query` できないため。
-
-ビルド時に `typst query` で座標を取り、その位置へ pyHanko で空の署名フィールドを注入する。
-フィールド名はそのまま役職名になる。サイドカーファイルは不要で、Acrobat からも標準の署名欄として見える。
-
-アプリが持つのは「メールアドレス → 役職」の対応表だけ。アプリは書類の種類を知らない。
-
-### 印影は本人が選ぶ。生成はいちばん後ろ
-
-印影に検証力は無い。真正性は証明書とタイムスタンプが持っていて、印影はただの絵であり、
-紙面を従来と同じ見た目に保つためだけに置く。
-
-押印枠に何を出すかは、この順で決まる。**印影を保管しない**のがこの設計の要で、
-置き場を持たないから Cloud Run でもローカルでも同じように動く。
-
-1. その署名のときにアップロードされた画像（保存しない）
-2. 名簿に組織が指定した画像
-3. Google アカウントのアイコン
-4. 名簿の文字から生成した丸印（文字が無ければ役職から）
-
-どれになっても、**上に小さくメールアドレスを添える**。アイコンや写真をそのまま押すと
-紙の上で誰の印か分からないため。生成した丸印なら姓が読めるが、写真では読めない。
-
-持ち込まれた画像はそのまま PDF に流さず、必ず開いて描き直す。素性の分からない画像を
-PDF に埋め込むことになるので、ここが検疫にあたる。透過を持たない画像（写真・アイコン）は
-丸く切り抜く。四角いまま貼ると押印枠が塗りつぶされ、紙面の見た目が変わってしまうため。
-
-なお実物の印章をスキャンした画像は勧めない。実印と同じ図案が PDF に載って出回ると、
-切り出して他の書類に貼る人が出る。紙の押印をやめたいのに押印の画像だけが流通するのは筋が悪い。
-
-生成に使う同梱フォントは Shippori Mincho（SIL Open Font License 1.1、
-`src/drive_qr_sign/assets/ShipporiMincho-OFL.txt`）。
-
-### アクセス制御は Drive の共有設定に任せる
-
-「この人は書類を見てよいか」をアプリの名簿で決めない。**サービスアカウントに共有された書類だけ**を
-アプリが触れ、**誰が見られるか**は Drive の共有設定（`permissions.list`）に従う。
-名簿が持つのは「メールアドレス → 役職」だけで、これは決裁の割り当てであってアクセス制御ではない。
-
-署名済みは**原本の新しい版として書き戻す**。別ファイルに逃がすと原本と署名済みが割れて、
-QR やリンクが指す原本にいつまでも署名が入らない。
-
-### 署名鍵は Cloud KMS に置く
-
-鍵を PEM で渡すと、アプリのプロセスに鍵そのものが載る。アプリを取られたら鍵ごと
-持ち出され、こちらの知らないところで無制限に署名を作れる。KMS に置くと鍵は出てこない。
-アプリにできるのは「このハッシュに署名して」と頼むことだけで、使った記録は
-Cloud Audit Logs に残り、権限を切れば止まる。
-
-```powershell
-gcloud services enable cloudkms.googleapis.com --project <プロジェクト>
-gcloud kms keyrings create drive-qr-sign --location asia-northeast1 --project <プロジェクト>
-gcloud kms keys create signing --location asia-northeast1 --keyring drive-qr-sign `
-  --purpose asymmetric-signing --default-algorithm rsa-sign-pkcs1-3072-sha256 --project <プロジェクト>
-gcloud kms keys add-iam-policy-binding signing --keyring drive-qr-sign --location asia-northeast1 `
-  --member "serviceAccount:<実行SA>" --role roles/cloudkms.signerVerifier --project <プロジェクト>
-
-python tools\make_kms_cert.py <鍵バージョンのリソース名> --out secrets\kms-cert.pem
-```
-
-証明書は鍵とは別物で、公開情報。鍵が KMS から出てこないので、**証明書の自己署名も
-KMS に頼む**（普通のライブラリは「秘密鍵を渡してくれれば署名する」形しか持たない）。
-あとは `SIGNING_KEY_KMS`（鍵バージョンのリソース名）と `SIGNING_CERT_PEM` を渡せば、
-PEM の鍵は要らなくなる。
-
-> [!WARNING] 鍵のアルゴリズムとダイジェストは揃える
-> KMS の鍵は `RSA_SIGN_PKCS1_3072_SHA256` のように1つに固定されている。
-> 何も言わないと pyHanko は鍵長からダイジェストを選び、3072bit に SHA-384 を当てて
-> KMS に断られる。`load_kms_signer(digest_algorithm=...)` で鍵に合わせる。
-
-> [!WARNING] 同時に押されたときの上書き
-> 読んで→署名して→書き戻す、のあいだに別の人の署名が入ると、その署名を含まない版で
-> 上書きしてしまう。防ぎ方は2つ重ねてある。
->
-> 1. 書類ごとの鍵で、この3つを1人ずつ通す（プロセス内でしか効かないので
->    **`--max-instances=1` で運用する**）
-> 2. 書き戻す直前に、Drive にある中身のハッシュが土台と同じかを確かめる
->    （違えば 409 で「もう一度押してください」）
->
-> Drive には「この中身のときだけ書き換える」条件付き更新が無いので、
-> 2 の隙間は完全には消えない。1 と併せて実用上塞ぐ、という形。
-
-> [!WARNING] サービスアカウントが乗っ取られたときの被害範囲
-> 共有されている書類は読まれるし上書きもされる。これは署名をサーバでやる以上避けられない。
-> 狭めるのは ①共有を回覧期間に限る ②署名鍵は KMS に置いて持ち出せなくする
-> ③署名要求をアプリが消せない場所に記録する、の3つ。消された場合の復元は Google Vault に委ねる。
-
-回覧が終わったら、その書類への共有を外す。**「回覧中」フォルダを1つ作り、そのフォルダごと
-サービスアカウントに共有する**のが扱いやすい。回覧を始める＝書類をフォルダに入れる、
-終わる＝Drive の画面でフォルダから出す。紙の回覧板を片付けるのと同じ動作で閉じられ、
-アプリもスクリプトも要らない（file id は変わらないので QR もリンクも切れない）。
-
-> [!NOTE] Drive の「アクセスの有効期限」では代替できない
-> 期限を付けられるのは **reader / commenter だけ**（ユーザーとグループ限定・最長1年）。
-> 書き戻しに writer が要るこのアプリの共有には付けられない。
-> → [Drive API: 共有の管理](https://developers.google.com/workspace/drive/api/guides/manage-sharing)
-
-書類ごとに外したいときは、こちら。
-
-```powershell
-.venv\Scripts\python.exe tools\close_circulation.py <file_id>
-```
-
-「押印枠が全部埋まったら自動で外す」ことはしていない。押印枠を持たない人の確認記録は
-枠と無関係にいつでも起きるので、枠が埋まった瞬間に締め出すと読了記録を残せなくなる。
-回覧を終えるのは人の判断であって、枠の数で決まる話ではない。
-
-### 署名の記録は、アプリの外にも残す
-
-署名のあと、本人へ確認のメールを送れる（オプション）。狙いは通知ではなく、
-**アプリが消せない場所に控えを作ること**にある。
-
-Workspace のドメインから送ったメールには DKIM 署名が付き、受信者の手元のコピーにも残る。
-署名者は「このドメインが確かにこの内容を送った」を、こちらの協力なしに証明できる。
-送信履歴は組織、受信履歴は本人。どちらも一方的には両方を消せない。
-
-本文に載せるのは file id ではなく**署名済み PDF の SHA-256** にする。
-file id はファイルが変わっても同じで何も固定しないが、ハッシュなら
-「このバイト列がこの人の署名で確定した」というドメイン署名付きの宣言になる。
-
-> [!WARNING] メール送信能力はアプリの被害範囲を広げる
-> 乗っ取られれば組織のドメインからフィッシングを撒ける。送信専用アカウント（`no-reply@`）の
-> 資格情報だけを持たせ、スコープは `gmail.send` に限る。
-> サービスアカウントの代理送信（domain-wide delegation）は使わない——
-> ドメイン内の誰にでもなりすませてしまうため。
-
-証明できるのは「通知された」ことまでで、「本人が押した」ことではない。
-
-### 署名者に Drive スコープを要求しない
-
-署名者の OAuth スコープは `openid` + `email` のみ。無料の Gmail アカウントでも、
-未審査アプリの警告画面を踏まずに署名できる。
-
-署名者が Drive の権限をアプリに渡さないので、アプリが署名者の代わりに Drive を触ることはない。
-アプリが持つのは自分のサービスアカウントだけで、そこに何が見えるかは組織の共有設定が決める。
-
-## 導入
-
-自分の組織の GCP に一式を置く手順は [docs/DEPLOY.md](docs/DEPLOY.md)。
-API の有効化からデプロイ・書類の作り方・回覧の閉じ方まで、上から順に実行すれば動く。
-実際に構築した記録から起こしてあり、踏んだ落とし穴も各所に書いてある。
+設計は [docs/DESIGN.md](docs/DESIGN.md)、導入手順は [docs/DEPLOY.md](docs/DEPLOY.md)。
 
 ## 開発
 
@@ -294,56 +57,19 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pytest
 ```
 
-サンプル書類をビルドして署名欄を注入する:
-
-```powershell
-.venv\Scripts\python.exe tools\build_sample.py
-```
-
 署名ページを立てる（Google ログインも Drive も無しで一周できる）:
 
 ```powershell
+.venv\Scripts\python.exe tools\build_sample.py
 .venv\Scripts\python.exe tools\run_dev.py
 ```
 
-起動時に署名用の URL を印字する。
-
-### Google ログインを繋ぐ
-
-`secrets/oauth-client.json` があれば本物の Google ログインになり、無ければ
-`?as=<メールアドレス>` で名乗れる開発専用の身元確認になる（この偽の実装は `tools/` の中にしか無い）。
-
-1. Google Cloud コンソールで OAuth クライアント（ウェブ アプリケーション）を作る
-2. 承認済みリダイレクト URI に `http://localhost:8765/oauth2/callback` を入れる。
-   Google はループバックだけを特別扱いするので、手元では http のままで通る
-3. クライアントの詳細から JSON をダウンロードし、`secrets/oauth-client.json` に置く
-
-同意画面のスコープは `openid` と `email` だけでよい。
-Google アカウントのアイコンを印影に使いたい場合のみ `profile` を足す。
-
-### Drive を繋ぐ
-
-`secrets/service-account.json` と `secrets/dev-drive.json` の両方があれば本物の Drive を使い、
-無ければローカルのディレクトリを倉庫にする。
-
-```powershell
-gcloud iam service-accounts create drive-qr-sign --project <PROJECT>
-gcloud iam service-accounts keys create secrets\service-account.json `
-  --iam-account drive-qr-sign@<PROJECT>.iam.gserviceaccount.com
-```
-
-そのうえで、署名させたい PDF を Drive でそのサービスアカウントに**編集者として共有**し、
-file id を `secrets/dev-drive.json` に書く。
-
-```json
-{ "file_id": "1jsEW..." }
-```
-
-本番（Cloud Run）では鍵ファイルを置かず、実行環境に紐づいたサービスアカウントをそのまま使う
-（`build_default_service()`）。鍵ファイルは開発用の逃げ道。
+起動時に署名用の URL を印字する。`secrets/oauth-client.json` を置けば本物の Google ログイン、
+`secrets/service-account.json` と `secrets/dev-drive.json` を置けば本物の Drive になる
+（どちらも無ければ `?as=<メールアドレス>` の偽ログインとローカルディレクトリ）。
 
 `secrets/` と `out/` は `.gitignore` 済み。
-TSA に接続するテストは既定で除外してある（`pytest -m network` で実行）。
+TSA に出るテストは既定で除外してある（`pytest -m network` で実行）。
 
 ## ライセンス
 
