@@ -65,8 +65,11 @@ def main(argv: list[str]) -> int:
 
     url = sign_url(origin, qr_secret, file_id)
     qr_png = OUT_DIR / "document-qr.png"
-    # 誤り訂正は高め。紙は折れるし汚れる
-    segno.make(url, error="h").save(str(qr_png), scale=12, border=2)
+    # 誤り訂正は Q（25%まで復元）。折り目・ホチキス穴・多少の汚れには耐える。
+    # ⚠H（30%）にすると冗長ぶんセルが増え、22mm 角に刷ると1セル 0.39mm まで細くなる。
+    # 家庭用プリンタとスマホのカメラには細かすぎる部類で、壊れへの強さと引き換えに
+    # そもそも読めなくなる。Q なら 0.45mm（実測して選んだ）
+    segno.make(url, error="q").save(str(qr_png), scale=12, border=2)
     print(f"file id : {file_id}")
     print(f"QR の URL: {url}")
 
