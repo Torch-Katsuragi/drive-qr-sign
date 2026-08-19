@@ -71,8 +71,8 @@ class SignerDirectory:
     def seal_image_for(self, email: str):
         """組織が名簿で指定した印影画像。指定が無ければ None。
 
-        生成はここではやらない。生成まで返すと、Google アカウントのアイコンに
-        出番が来なくなる（アイコンのほうが既定であってほしい）。
+        生成はここではやらない。生成の落ち先は web 層が持っている
+        （`_seal_source` の順番）。名簿は「組織が指定した画像」だけを答える。
         """
         from .seal import prepare_uploaded
 

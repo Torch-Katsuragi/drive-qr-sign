@@ -144,9 +144,9 @@ def create_app(
         choices = []
         if signer_directory.seal_image_for(email) is not None:
             choices.append(SEAL_REGISTERED)
+        choices.append(SEAL_GENERATED)
         if _google_picture(request):
             choices.append(SEAL_ICON)
-        choices.append(SEAL_GENERATED)
         return choices
 
     def _seal_source(request: Request, email: str, uploaded: bytes | None, choice: str = ""):
@@ -156,8 +156,12 @@ def create_app(
 
         1. その場でアップロードされた画像（この署名かぎり。保管しない）
         2. 名簿に組織が指定した画像
-        3. Google アカウントのアイコン
-        4. 名簿の文字から生成した丸印（無ければ役職から）
+        3. 名簿の文字から生成した丸印（無ければ役職から）
+
+        Google アカウントのアイコンは**選べば使えるが、既定にはしない**。
+        押印枠に入るのは印であって顔写真ではないので、何も選ばなかった人の紙面が
+        アカウントの設定次第で変わるのは具合が悪い。生成した丸印なら、
+        名簿さえ整っていれば誰が押しても同じ体裁になる。
 
         押印枠に押すときは、この絵の上にメールアドレスを添える（_stamp_for）。
         画面右上のアカウントアイコンには、添えずにそのまま出す。
@@ -174,11 +178,8 @@ def create_app(
             seal = signer_directory.seal_image_for(email)
         elif seal is None:
             seal = signer_directory.seal_image_for(email)
-            if seal is None:
-                seal = _account_icon(request, email)
         if seal is None:
-            # アイコンが無い（profile を要求していない・設定していない）人。
-            # 名簿の文字、無ければアドレスの頭文字で最低限の見た目を作る
+            # 既定の落ち先。名簿の文字、無ければアドレスの頭文字で作る
             seal = render_seal(signer_directory.seal_text_for(email) or email.strip()[:1].upper() or "?")
         return seal
 
