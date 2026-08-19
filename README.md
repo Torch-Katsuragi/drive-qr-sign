@@ -1,16 +1,22 @@
 # drive-qr-sign
 
-> **In English** — Japanese organizations circulate paper documents and stamp them with a personal
-> seal (*hanko*). This app replaces **only that stamping step** with a real PAdES signature, while the
-> document stays in Google Drive. Print the document with a QR code, circulate the paper as before,
-> and each approver scans the QR, signs in with Google, and taps once: the app fetches the PDF from
-> Drive, embeds a PAdES signature with an RFC 3161 timestamp, and writes it back as a new revision
-> of the same file. The proof lives in the PDF, so signed documents outlive this app.
-> **Documentation and code comments are in Japanese**, because the problem it solves is.
+> **In English** — Keep passing the paper around. Replace only the stamp.
+>
+> Japanese offices circulate printed documents and approve them with a personal seal (*hanko*).
+> This tool leaves that ritual intact and swaps out one gesture: instead of inking a stamp,
+> each approver scans the QR on the page, signs in with the Google account they already have,
+> and taps once. A PAdES signature and an RFC 3161 timestamp land inside the PDF, and the original
+> in Google Drive is updated in place — same file, same link, one more revision.
+>
+> No new accounts. No per-seat subscription. No moving documents into someone else's system.
+> The evidence lives in the PDF, so signed documents outlive this app.
+>
+> **The documentation and code comments are in Japanese**, because the problem is.
 
-**紙の回覧をやめずに、押印だけを電子署名にする。**
-新しいアカウントも、席数ぶんの月額も、書類の引っ越しも要らない。
-組織がすでに持っている Google アカウントと Google Drive の上に乗せる。
+**紙の回覧は、続けていい。変えるのは、判子を押す一手だけ。**
+
+アカウントは増やさない。書類は動かさない。月額も要らない。
+すでに組織にあるもの——Google アカウントと、Drive に置いてある書類——の上に、署名だけを載せる。
 
 ```
 書類PDFをDriveに置く → QR付きで印刷して、いつもどおり紙で回覧
@@ -18,11 +24,19 @@
   → PAdES署名＋タイムスタンプが入り、Driveの原本が新しい版として更新される
 ```
 
+判子は朱肉から離れるが、回覧板は回り続ける。
+そして証跡は PDF そのものに残るので、**このアプリを捨てた後も、署名済み PDF 単体で検証できる**。
+
 ## なぜ既存のサービスではないのか
 
-押印をやめようとすると、たいてい電子契約サービスに行き着く。小さな組織ではそこで止まる。
-署名する全員に新しいアカウントを配れない。書類の置き場が二重になる。月に数件の回覧のために
-席数ぶんの月額は出ない。そして証跡がサービスの中にあるので、やめたときに何が残るか分からない。
+押印をやめる話は、たいてい同じところで止まる。
+
+全員ぶんのアカウントを配れない。書類の置き場が二重になる。月に数件の回覧に、
+席数ぶんの月額は見合わない。そして、そのサービスをやめた日に何が手元に残るのかが、
+誰にも分からない。
+
+止まる理由は機能ではなく、**組織の外に新しい場所を作らせようとすること**にある。
+だからこの道具は、新しい場所を作らない。
 
 |  | 一般的な電子契約サービス | drive-qr-sign |
 |---|---|---|
@@ -43,13 +57,16 @@
 | タイムスタンプ | freeTSA なら 0 円（認定タイムスタンプ局を使うなら有料） |
 | 記録メール（任意） | 送信サービスの無料枠（月3,000通程度） |
 
-**月あたり数十円のオーダー**で、しかも署名する人数が増えても増えない。
-高くなるのは「認定タイムスタンプ局」と「AATL 証明書」を選んだときだけで、
-それは証明力をどこまで上げるかの判断（→ [docs/DESIGN.md](docs/DESIGN.md)）。
+合計は**月あたり数十円のオーダー**。しかも署名する人が10人に増えても、金額は増えない。
+席数で課金されないというのは、そういうことだ。
+
+金額が跳ねるのは、認定タイムスタンプ局と AATL 証明書を選んだときだけ。
+それは「どこまでの証明力を買うか」という別の判断になる（→ [docs/DESIGN.md](docs/DESIGN.md)）。
 
 ## 何が付いてきて、何は自分でやるのか
 
-QR が名前に入っているが、**QR は入口にすぎない**。主役は「紙の回覧をやめないこと」のほう。
+名前に QR と入っているが、**QR は入口にすぎない**。主役は、紙の回覧をやめないことのほうだ。
+だから「何をやってくれないか」も先に書いておく。
 
 - ✅ 署名ページ（QR を開く → 自分の欄 → 中身を確認 → ワンタップ）
 - ✅ PAdES 署名 + タイムスタンプ + Drive の原本への書き戻し
@@ -59,7 +76,9 @@ QR が名前に入っているが、**QR は入口にすぎない**。主役は�
   空の署名フィールドはアプリが署名時に作る（押印枠に絵を出したいときだけ座標が要る）
 - ❌ ワークフロー管理（誰が未押印か、催促、期限）は持たない。それは紙の回覧板と口頭がやる
 
-## 技術的に変わっているところ
+## 他と違うところ
+
+作りのうえで効いているのは、この4つ。
 
 - **署名者に Drive のスコープを要求しない**。同意画面に出るのは「メールアドレスの確認」だけで、
   未審査アプリの警告が出ない。書類を取りに行くのはアプリのサービスアカウントで、
@@ -73,8 +92,10 @@ QR が名前に入っているが、**QR は入口にすぎない**。主役は�
 
 ## 現状
 
-**動くものが本番に載っている。ただし実運用のテストはこれから。**
-書いた本人と1つの組織で通しただけで、まだ誰かの回覧を1件も回していない。
+**動くものが本番に載っている。ただし、まだ誰の回覧も1件も回していない。**
+
+書いた本人が実物の Drive で通しただけで、実運用のテストはこれから。
+下の表は「動く」と書いてあるが、それは開発者が確かめた範囲での話だと思って読んでほしい。
 
 | | |
 |---|---|
@@ -90,7 +111,7 @@ QR が名前に入っているが、**QR は入口にすぎない**。主役は�
 | 署名の記録メール（DKIM 付き・任意） | 動く |
 | Typst の押印枠 → 空署名フィールドの自動注入・QR の焼き込み | 動く |
 
-⚠**承知しておくこと**
+試す前に知っておいてほしいこと。
 
 - 証明書は自己署名なので、**Acrobat の署名パネルに「信頼されていない」警告が出る**。
   組織の中で回すなら、その証明書を1回信頼登録すれば消える。外に出す書類で警告を消すには
@@ -108,8 +129,10 @@ QR が名前に入っているが、**QR は入口にすぎない**。主役は�
 
 ### PDF が署名欄を自己記述する
 
-署名欄の位置をアプリが持つと、書類の種類が増えるたびにアプリを直すことになる。
-そうならないよう、位置は書類側（Typst）に持たせる。
+署名欄がどこにあるかをアプリが覚えていると、書類が1種類増えるたびにアプリを直すことになる。
+支出調書、稟議書、復命書——増えるたびに開発者を呼ぶ道具は、現場では使われなくなる。
+
+だから位置は書類の側に持たせる。書類が自分で「ここに組合長の枠がある」と名乗る。
 
 ```typst
 #let sig-anchor(role, w: 24mm, h: 24mm) = box(width: w, height: h, stroke: 0.5pt + gray)[
