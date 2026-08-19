@@ -886,5 +886,6 @@ def test_who_has_signed_is_visible_including_the_invisible_ones(env):
     # 3人目（まだ押していない人）から見て、2人とも見えること
     identity.email = "soumu@example.test"
     body = client.get(_url()).text
-    assert "kumiaicho@example.test" in body
+    assert "2人が署名" in body  # ラベルは数だけ
+    assert "kumiaicho@example.test" in body  # 押すと出る一覧に、両方入っている
     assert "kanji@example.test" in body

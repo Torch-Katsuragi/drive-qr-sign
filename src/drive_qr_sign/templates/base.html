@@ -103,13 +103,20 @@
   .role { font-size: clamp(1.5rem, 1.2rem + 2vw, 2.25rem); font-weight: 600; margin: 0 0 .5rem; }
   .note { font-size: .85rem; color: var(--muted); }
 
-  /* 押した人の一覧。紙面に出ない署名はここでしか見えない */
-  .signed { margin: .75rem 0 0; padding: 0; list-style: none; font-size: .85rem; }
-  .signed li {
-    display: flex; gap: .5rem; align-items: baseline;
-    padding: .35rem 0; border-top: 1px solid var(--line);
+  /* 押した人。数だけ出して、押すと誰かが分かる */
+  .counter {
+    width: auto; margin-top: .75rem; padding: .3rem .9rem;
+    background: none; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--muted); font-weight: 400; font-size: .85rem;
   }
-  .signed span { color: var(--muted); overflow-wrap: anywhere; }
+
+  .signed { margin: 0; padding: 0; list-style: none; font-size: .85rem; text-align: left; }
+  .signed li {
+    display: flex; gap: .5rem; align-items: center;
+    padding: .5rem 0; border-top: 1px solid var(--line);
+  }
+  .signed .address { flex: 1; overflow-wrap: anywhere; }
+  .signed i { color: var(--muted); font-style: normal; }
 
   /* 幅があるときだけ2カラム。押す場所を右に固めて、視線の行き先を1つにする */
   .cols { display: grid; gap: clamp(1.25rem, 3vw, 2.5rem); align-items: start; }

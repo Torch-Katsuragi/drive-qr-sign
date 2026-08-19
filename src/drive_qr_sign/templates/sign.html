@@ -67,16 +67,24 @@
       <p class="note">押印枠はすべて埋まっています。</p>
     {% endif %}
 
-    {# 紙面に出ない署名は、ここでしか見えない #}
+    {# 紙面に出ない署名は、ここでしか見えない。押すと誰が押したかが出る #}
     {% if signed_by %}
-      <ul class="signed">
-        {% for signature in signed_by %}
-          <li>
-            {% if signature.role %}<b>{{ signature.role }}</b>{% else %}確認{% endif %}
-            <span>{{ signature.who }}</span>
-          </li>
-        {% endfor %}
-      </ul>
+      <button type="button" class="counter" data-opens="signed-dialog">
+        {{ signed_by | length }}人が署名
+      </button>
+
+      <dialog id="signed-dialog" class="seals">
+        <p class="who">この書類に押した人</p>
+        <ul class="signed">
+          {% for signature in signed_by %}
+            <li>
+              <span class="address">{{ signature.who }}</span>
+              {% if signature.role %}<b>{{ signature.role }}</b>{% else %}<i>確認</i>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+        <button type="button" class="quiet" data-closes>閉じる</button>
+      </dialog>
     {% endif %}
   </section>
 
