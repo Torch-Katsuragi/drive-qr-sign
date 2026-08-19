@@ -38,8 +38,14 @@ Drive にはこのアドレスを書類ごとに共有して届かせる（→ 6
    - スコープは `openid` `email` `profile` だけ。⚠**Drive のスコープを足さない**。
      足すと署名者に「確認されていないアプリ」の警告が出て、導入できる組織が激減する
 2. 「認証情報」→「OAuth クライアント ID」→ 種類=ウェブアプリ
-3. リダイレクト URI は、いまは `http://localhost:8765/oauth2/callback` だけ入れる
-   （本番の URL は 5章のデプロイまで分からない）
+3. リダイレクト URI に2つ入れる
+   - `http://localhost:8765/oauth2/callback`（手元の開発用）
+   - `https://<サービス名>-<プロジェクト番号>.<リージョン>.run.app/oauth2/callback`（本番）
+
+   本番 URL はデプロイ前に分かる。いまの Cloud Run は
+   `https://<サービス名>-<プロジェクト番号>.<リージョン>.run.app` 形式で、
+   プロジェクト番号は `gcloud projects describe <プロジェクト> --format="value(projectNumber)"` で引ける。
+   サービス名を `drive-qr-sign` にするなら、この時点で確定している
 4. JSON をダウンロードして `secrets/oauth-client.json` に置く
 
 ## 4. 署名鍵（Cloud KMS）と証明書
@@ -73,9 +79,13 @@ python tools\make_kms_cert.py `
 ```
 
 ```powershell
-# 秘密の値（QR の署名鍵とセッションの鍵）は推測できない値を作る
-python -c "import secrets;print(secrets.token_urlsafe(32))" | gcloud secrets create drive-qr-sign-qr-secret --data-file=- --project <プロジェクト>
-python -c "import secrets;print(secrets.token_urlsafe(32))" | gcloud secrets create drive-qr-sign-session-secret --data-file=- --project <プロジェクト>
+# 秘密の値（QR の署名鍵とセッションの鍵）は推測できない値を作る。
+# ⚠パイプで渡さず、改行なしのファイルに書いてから入れること（次の警告を参照）
+python -c "import secrets;open('qr.txt','w',newline='').write(secrets.token_urlsafe(32))"
+python -c "import secrets;open('sess.txt','w',newline='').write(secrets.token_urlsafe(32))"
+gcloud secrets create drive-qr-sign-qr-secret --data-file=qr.txt --project <プロジェクト>
+gcloud secrets create drive-qr-sign-session-secret --data-file=sess.txt --project <プロジェクト>
+Remove-Item qr.txt, sess.txt
 gcloud secrets create drive-qr-sign-signers --data-file=signers.json --project <プロジェクト>
 gcloud secrets create drive-qr-sign-oauth-client --data-file=secrets\oauth-client.json --project <プロジェクト>
 gcloud secrets create drive-qr-sign-signing-cert --data-file=secrets\kms-cert.pem --project <プロジェクト>
@@ -87,6 +97,33 @@ foreach ($s in "qr-secret","session-secret","signers","oauth-client","signing-ce
     --role roles/secretmanager.secretAccessor
 }
 
+```
+
+⚠**秘密の値に改行を混ぜない**。`python -c "print(...)" | gcloud ... --data-file=-` で作ると、
+値の末尾に改行が入る（PowerShell 経由だと `CR CR LF` が付く）。アプリは環境変数を生のまま
+受け取るので、QR を作る側が `.strip()` していると HMAC が食い違い、
+署名ページが **403「この URL は無効です」** で開かなくなる。
+すでに作ってしまった場合は、改行を落とした版を新しいバージョンとして足す:
+
+```powershell
+gcloud secrets versions access latest --secret drive-qr-sign-qr-secret --project <プロジェクト> `
+  | ForEach-Object { $_.Trim() } | Set-Content -NoNewline -Path fixed.txt
+gcloud secrets versions add drive-qr-sign-qr-secret --data-file=fixed.txt --project <プロジェクト>
+Remove-Item fixed.txt
+```
+
+⚠**新しいプロジェクトでは、`--source` のデプロイに Cloud Build の権限を足す必要がある**。
+既定のコンピュート サービスアカウントに Editor が付かなくなったため、そのままだと
+`does not have storage.objects.get access ... forbidden` でビルドが始まらない:
+
+```powershell
+$num = gcloud projects describe <プロジェクト> --format="value(projectNumber)"
+gcloud projects add-iam-policy-binding <プロジェクト> `
+  --member "serviceAccount:$num-compute@developer.gserviceaccount.com" `
+  --role roles/cloudbuild.builds.builder --condition=None
+```
+
+```powershell
 gcloud run deploy drive-qr-sign --source . --project <プロジェクト> --region <リージョン> `
   --service-account drive-qr-sign@<プロジェクト>.iam.gserviceaccount.com `
   --allow-unauthenticated --max-instances=1 `
@@ -101,12 +138,29 @@ gcloud run deploy drive-qr-sign --source . --project <プロジェクト> --regi
 ⚠**`--allow-unauthenticated` が要る**。署名者は Google でログインするが、それはアプリ側の
 仕組みであって Cloud Run の IAM ではない。ここを閉じると誰も署名ページに来られない。
 
-デプロイの出力に本番 URL が出る。⚠**この URL は推測できない**
-（`https://<サービス>-<プロジェクト番号>.<リージョン>.run.app` ではなく
-`https://drive-qr-sign-4rt5qtts2q-an.a.run.app` のような形）。出てきた値で:
+⚠**組織で「ドメイン制限共有」が効いていると、`--allow-unauthenticated` は警告だけ出して失敗する**。
+デプロイ自体は成功するが `Setting IAM policy failed` と出て、`allUsers` が付かないまま公開されない。
+Google Workspace の組織は既定でこの制約（`iam.allowedPolicyMemberDomains`）が入っていることがある。
+**このプロジェクトに限った例外**を1つ置いて解く（組織全体には触らない）:
 
-1. `PUBLIC_ORIGIN` を入れ直してもう一度デプロイ
-2. 3章の OAuth クライアントに `https://<本番URL>/oauth2/callback` を足す
+```powershell
+@"
+constraint: constraints/iam.allowedPolicyMemberDomains
+listPolicy:
+  allValues: ALLOW
+"@ | Set-Content -Path drs.yaml
+gcloud resource-manager org-policies set-policy drs.yaml --project <プロジェクト>
+Remove-Item drs.yaml
+# 反映に1〜2分かかる。そのあとで
+gcloud run services add-iam-policy-binding drive-qr-sign --region <リージョン> --project <プロジェクト> `
+  --member=allUsers --role=roles/run.invoker
+```
+
+例外を置く先は、**このアプリだけが入っているプロジェクト**にする。既存の業務プロジェクトに
+相乗りさせると、そのプロジェクト全体で組織外への権限付与が解禁されてしまう。
+
+デプロイの出力に本番 URL が出る。3章で登録した URI と一致していることを確認する
+（一致していれば `PUBLIC_ORIGIN` の入れ直しも再デプロイも要らない）。
 
 ## 6. 書類を用意して回覧する
 
@@ -151,4 +205,6 @@ Drive にも受信箱にも届かない。
 | ログに何も出ない | uvicorn は自前のロガーしか設定しない。アプリ側は `basicConfig` が要る（`main.py` で実施済み） |
 | KMS が「そのダイジェストは使えない」 | 鍵のアルゴリズムと署名のダイジェストの不一致。`load_kms_signer(digest_algorithm=...)` を鍵に合わせる |
 | ログインで「Token used too early」 | 端末の時計のずれ。許容幅は実装済み（30秒） |
+| 署名ページが 403「この URL は無効です」 | QR の鍵が食い違っている。Secret Manager の値に改行が混ざっていないか見る（→ 5章） |
+| デプロイは通るのに誰も署名ページを開けない | `allUsers` が付いていない。組織ポリシーの「ドメイン制限共有」を疑う（→ 5章） |
 | 署名が 409「ほかの人の署名と重なりました」 | 同時に押された。押し直せばよい（先の署名は消えていない） |

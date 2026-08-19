@@ -208,6 +208,11 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pytest
 ```
 
+> [!NOTE] Windows on ARM では x64 の Python を使う
+> ネイティブ ARM64 の Python だと `cryptography` / `grpcio` / `httptools` の
+> ホイールが無く、ソースからのビルドに Visual Studio を要求されて止まる。
+> x64 版（エミュレーション）の Python なら、そのまま入る。
+
 サンプル書類をビルドして署名欄を注入する:
 
 ```powershell
