@@ -823,3 +823,37 @@ def test_a_signature_that_lands_mid_flight_is_not_overwritten(
     assert "もう一度押してください" in response.text
     # 割り込んだ側の署名は残っている（消されていない）
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["担当"]
+
+
+def test_a_document_without_your_seal_box_is_not_called_signed(sample_pdf: Path, dev_cert, tmp_path: Path):
+    """押印枠が無い書類を「署名済み」と言わない。
+
+    Typst 以外で作った書類には押印枠が無いことがある。名簿に役職があっても、
+    その書類に枠が無ければ、押す場所が無いだけ。確認の記録は残せる。
+    """
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    # 押印枠を注入していない、素の PDF（Word などから出した書類の代役）
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(sample_pdf.read_bytes())
+
+    key, cert = dev_cert
+    app = create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory({"kumiaicho@example.test": SignerEntry(role="組合長")}),
+        identity_provider=FakeIdentityProvider("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    client = TestClient(app)
+    body = client.get(_url()).text
+
+    assert "署名済み" not in body
+    assert "確認したことを記録する" in body  # 紙面に出ない署名なら残せる
+
+    csrf = _extract_csrf(body)
+    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    assert response.status_code == 200
+    assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == [
+        silent_field_name("kumiaicho@example.test")
+    ]

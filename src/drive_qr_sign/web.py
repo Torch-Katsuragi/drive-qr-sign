@@ -307,6 +307,7 @@ def create_app(
         見られるかどうかは Drive の共有設定、押印枠に押せるかは名簿の役職。
         判定の出どころが2つに分かれているのは、それぞれ守っているものが違うため。
         """
+        all_fields = list_signature_fields(io.BytesIO(pdf))
         empty_fields = list_signature_fields(io.BytesIO(pdf), filled=False)
         if not email:
             return MODE_LOGIN, None, empty_fields
@@ -314,13 +315,16 @@ def create_app(
             return MODE_STRANGER, None, empty_fields
 
         role = signer_directory.role_for(email)
-        if role:
-            mode = MODE_ROLE_READY if role in empty_fields else MODE_ROLE_DONE
-            return mode, role, empty_fields
+        if role in empty_fields:
+            return MODE_ROLE_READY, role, empty_fields
+        if role in all_fields:
+            return MODE_ROLE_DONE, role, empty_fields
 
-        # 押印枠を持たない人。書類を見られる人なら確認の記録は残せる。
-        # 同じ名前のフィールドは2度作れないので、それが二重署名の判定になる
-        already = silent_field_name(email) in list_signature_fields(io.BytesIO(pdf))
+        # 名簿に役職があっても、この書類にその押印枠が無いことはある
+        # （Word など他の道具で作った書類、役職ごとに枠を置かない書類）。
+        # ⚠その場合を「署名済み」と言ってはいけない。押す場所が無いだけで、
+        # 確認の記録は残せる——押印枠を持たない人と同じ扱いにする
+        already = silent_field_name(email) in all_fields
         return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
 
     def _revocable_field(pdf: bytes, email: str) -> str | None:
