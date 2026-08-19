@@ -23,6 +23,18 @@ class InvalidPayload(Exception):
     """QR の中身が壊れているか、この鍵で発行されたものではない。"""
 
 
+def _normalized(secret: bytes) -> bytes:
+    """鍵の前後の空白を落とす。
+
+    ⚠鍵は Secret Manager から環境変数で来る。作るときに
+    `python -c "print(...)" | gcloud secrets create --data-file=-` とすると
+    末尾に改行が入り（PowerShell 経由だと `CR CR LF`）、片側だけが取り除くと
+    MAC が食い違って署名ページが 403 になる。実際に別の組織の導入で起きた。
+    どちらの側も必ずここを通せば、混ざっていても食い違わない。
+    """
+    return secret.strip()
+
+
 def _digest(secret: bytes, file_id: str) -> bytes:
     message = f"{MAC_VERSION}:{file_id}".encode("utf-8")
     return hmac.new(secret, message, hashlib.sha256).digest()[:MAC_BYTES]
@@ -30,13 +42,24 @@ def _digest(secret: bytes, file_id: str) -> bytes:
 
 def make_mac(secret: bytes, file_id: str) -> str:
     """file id に対する MAC を URL に載る形（base64url・パディングなし）で返す。"""
-    return base64.urlsafe_b64encode(_digest(secret, file_id)).decode("ascii").rstrip("=")
+    digest = _digest(_normalized(secret), file_id)
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def verify_mac(secret: bytes, file_id: str, mac: str) -> None:
-    """MAC が合わなければ InvalidPayload を投げる。合えば黙って返る。"""
-    if not hmac.compare_digest(make_mac(secret, file_id), mac):
-        raise InvalidPayload(f"MAC が一致しない: {file_id}")
+    """MAC が合わなければ InvalidPayload を投げる。合えば黙って返る。
+
+    ⚠空白を落とす前の鍵で作られた MAC も通す。落とす扱いに変えた時点で、
+    それ以前に**刷られた QR** が一斉に無効になってしまうため。
+    鍵の材料は同じなので、通す MAC が2つになっても偽造は難しくならない。
+    刷り直しが済んだ導入先では、この逃げ道を外してよい。
+    """
+    for candidate in {_normalized(secret), secret}:
+        digest = _digest(candidate, file_id)
+        expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        if hmac.compare_digest(expected, mac):
+            return
+    raise InvalidPayload(f"MAC が一致しない: {file_id}")
 
 
 def sign_url(base_url: str, secret: bytes, file_id: str) -> str:
