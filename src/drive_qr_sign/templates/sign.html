@@ -66,6 +66,18 @@
     {% else %}
       <p class="note">押印枠はすべて埋まっています。</p>
     {% endif %}
+
+    {# 紙面に出ない署名は、ここでしか見えない #}
+    {% if signed_by %}
+      <ul class="signed">
+        {% for signature in signed_by %}
+          <li>
+            {% if signature.role %}<b>{{ signature.role }}</b>{% else %}確認{% endif %}
+            <span>{{ signature.who }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
   </section>
 
   <aside class="action">

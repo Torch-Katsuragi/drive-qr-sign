@@ -103,6 +103,14 @@
   .role { font-size: clamp(1.5rem, 1.2rem + 2vw, 2.25rem); font-weight: 600; margin: 0 0 .5rem; }
   .note { font-size: .85rem; color: var(--muted); }
 
+  /* 押した人の一覧。紙面に出ない署名はここでしか見えない */
+  .signed { margin: .75rem 0 0; padding: 0; list-style: none; font-size: .85rem; }
+  .signed li {
+    display: flex; gap: .5rem; align-items: baseline;
+    padding: .35rem 0; border-top: 1px solid var(--line);
+  }
+  .signed span { color: var(--muted); overflow-wrap: anywhere; }
+
   /* 幅があるときだけ2カラム。押す場所を右に固めて、視線の行き先を1つにする */
   .cols { display: grid; gap: clamp(1.25rem, 3vw, 2.5rem); align-items: start; }
   @media (min-width: 34rem) {

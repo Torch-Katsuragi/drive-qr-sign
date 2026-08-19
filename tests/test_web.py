@@ -382,6 +382,11 @@ def test_cannot_sign_a_field_that_is_not_yours(env):
     assert response.status_code == 403  # csrf が本人のものではない
 
 
+def _unsigned_boxes(html: str) -> str:
+    """「未署名の押印枠:」の行だけを取り出す（押した人の一覧と混ざらないように）。"""
+    return html.split("未署名の押印枠:")[1].split("</p>")[0]
+
+
 def _extract_csrf(html: str) -> str:
     marker = 'name="csrf" value="'
     start = html.index(marker) + len(marker)
@@ -634,7 +639,7 @@ def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
         tsa_url=None,
     )
     client = TestClient(app)
-    assert "組合長" in client.get(_url()).text.split("未署名の押印枠:")[1]
+    assert "組合長" in _unsigned_boxes(client.get(_url()).text)
 
     # 別の経路（別インスタンスなど）で組合長が押される
     signed = io.BytesIO()
@@ -648,7 +653,7 @@ def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
     )
     (store_dir / f"{FILE_ID}.signed.pdf").write_bytes(signed.getvalue())
 
-    assert "組合長" not in client.get(_url()).text.split("未署名の押印枠:")[1]
+    assert "組合長" not in _unsigned_boxes(client.get(_url()).text)
 
 
 def test_the_document_links_to_the_original_in_drive(fields_pdf: Path, dev_cert, tmp_path: Path):
@@ -857,3 +862,29 @@ def test_a_document_without_your_seal_box_is_not_called_signed(sample_pdf: Path,
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == [
         silent_field_name("kumiaicho@example.test")
     ]
+
+
+def test_who_has_signed_is_visible_including_the_invisible_ones(env):
+    """紙面に出ない署名も、画面には出す。
+
+    紙を見ても不可視署名は分からない。回覧が回りきったかを判断するのは人なので、
+    「誰が確認したか」が画面で見えないと、この機能は使えない。
+    """
+    client, identity, _ = env
+
+    identity.email = "kumiaicho@example.test"  # 押印枠を持つ人
+    client.post(
+        f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
+        data={"csrf": _extract_csrf(client.get(_url()).text)},
+    )
+    identity.email = "kanji@example.test"  # 押印枠を持たない人（不可視署名）
+    client.post(
+        f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
+        data={"csrf": _extract_csrf(client.get(_url()).text)},
+    )
+
+    # 3人目（まだ押していない人）から見て、2人とも見えること
+    identity.email = "soumu@example.test"
+    body = client.get(_url()).text
+    assert "kumiaicho@example.test" in body
+    assert "kanji@example.test" in body

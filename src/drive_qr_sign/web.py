@@ -29,12 +29,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .documents import DocumentNotFound, DocumentStore
-from .identity import IdentityProvider, SignerDirectory, silent_field_name
+from .identity import (
+    SILENT_FIELD_PREFIX,
+    IdentityProvider,
+    SignerDirectory,
+    silent_field_name,
+)
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .cache import TimedCache
 from .qr import InvalidPayload, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
 from .signing import (
+    list_signatures,
     FREE_TSA_URL,
     NotRevocable,
     last_signature,
@@ -327,6 +333,18 @@ def create_app(
         already = silent_field_name(email) in all_fields
         return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
 
+    def _signed_by(pdf: bytes) -> list[dict]:
+        """この書類に押されている署名の一覧。押印枠のものも、不可視のものも。
+
+        ⚠不可視の署名は紙を見ても分からない。回覧が回りきったかを判断するのは人なので、
+        「誰が確認したか」は画面で見えないと使えない。
+        """
+        signed = []
+        for field_name, signer in list_signatures(pdf):
+            silent = field_name.startswith(SILENT_FIELD_PREFIX)
+            signed.append({"who": signer, "role": None if silent else field_name})
+        return signed
+
     def _revocable_field(pdf: bytes, email: str) -> str | None:
         """その人がいま取り消せる署名の欄名。取り消せなければ None。
 
@@ -404,6 +422,8 @@ def create_app(
                 "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
                 # 原本を開く先。Drive にあるならそちらを指す（無ければアプリが配る PDF）
                 "document_url": _web_url(file_id),
+                # 誰が押したか。紙に出ない署名もここでだけ見える
+                "signed_by": _signed_by(pdf) if mode not in {MODE_LOGIN, MODE_STRANGER} else [],
                 # 選べる印影。先頭が既定（_seal_source の落ちる順と同じ）
                 "seal_choices": _seal_choices(request, email) if email else [],
             },

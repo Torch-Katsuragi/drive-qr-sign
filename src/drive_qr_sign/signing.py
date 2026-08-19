@@ -240,6 +240,21 @@ class NotRevocable(Exception):
     """その署名は取り消せない。"""
 
 
+def list_signatures(pdf: bytes) -> list[tuple[str, str]]:
+    """押されている署名の (フィールド名, 署名者) を、押された順に返す。
+
+    紙面に出る押印だけでなく、不可視の署名もここに出る。
+    ⚠**紙を見ても不可視署名は分からない**ので、誰が確認したかを人に見せるには
+    この一覧が要る（署名パネルを開かせるわけにはいかない）。
+    """
+    reader = PdfFileReader(io.BytesIO(pdf))
+    found = []
+    for embedded in reader.embedded_signatures:
+        name = embedded.sig_object.get("/Name")
+        found.append((embedded.field_name, str(name) if name else ""))
+    return found  # 押された順に返る（増分更新の積み順）
+
+
 def last_signature(pdf: bytes) -> tuple[str, str] | None:
     """最後に押された署名の (フィールド名, 署名者) を返す。無ければ None。
 
