@@ -196,6 +196,27 @@ gcloud secrets create drive-qr-sign-resend-key --data-file=secrets\resend-api-ke
 ⚠API キーは**送信権限だけ**のものにする。漏れてもできるのはメールを出すことだけで、
 Drive にも受信箱にも届かない。
 
+## 8. 認証の記録を残す（任意・強く勧める）
+
+⚠**署名を捏造できるのはアプリの管理者**である（→ README「現状」）。その対抗になるのは
+**Google が作る記録**で、管理者にも消せない——保持期間の変更も削除もできない。
+ただし**保持は6か月**なので、書類より先に消える。
+
+```powershell
+python toolsrchive_auth_log.py --authorize        # 初回だけ。管理者アカウントで許可する
+python toolsrchive_auth_log.py --folder <DriveフォルダID> --days 7 `
+  --timestamp https://freetsa.org/tsr
+```
+
+Drive にファイルとして置くのが要点。Vault が扱えるのは Gmail や Drive の**中身**であって
+監査ログではないので、こうして初めて Vault の保持ルールに乗る。Drive の監査ログを
+定期的に落としている組織なら、その回に相乗りさせるのが早い。
+
+- ⚠置き先は**アプリの管理者ではない人**が管理するフォルダにする
+- ⚠`--timestamp` を付けると束そのものに時刻が付き、**後から辻褄を合わせて作った記録**を
+  出せなくなる。一方、**本人が正当に認証した直後に別の書類へ署名する**形の捏造は防げない
+  （Google 側の記録に文書との結びつきが無いため）
+
 ## 動かないときに見るところ
 
 | 症状 | 原因 |
