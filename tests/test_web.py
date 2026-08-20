@@ -769,6 +769,44 @@ def test_the_account_icon_appears_as_a_choice_when_there_is_one(fields_pdf: Path
     assert "アカウントのアイコン" in body
 
 
+def test_the_generated_seal_is_the_default_even_with_an_icon(
+    fields_pdf: Path, dev_cert, tmp_path: Path
+):
+    """アイコンを持っている人でも、既定は生成した丸印。
+
+    押印枠に入るのは印であって顔写真ではない。何も選ばなかった人の紙面が
+    アカウントの設定次第で変わらないよう、既定は名簿から作る。
+    """
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    (store_dir / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+
+    class WithPicture(FakeIdentityProvider):
+        def picture_url(self, request):
+            return "https://lh3.googleusercontent.com/a/xyz"
+
+    key, cert = dev_cert
+    app = create_app(
+        document_store=LocalDocumentStore(store_dir),
+        signer_directory=SignerDirectory(
+            {"kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本")}
+        ),
+        identity_provider=WithPicture("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    body = TestClient(app).get(_url()).text
+    # 選択肢は並び順がそのまま既定。生成がアイコンより先に来る
+    assert body.index('value="generated"') < body.index('value="icon"')
+
+    # 何も選ばずに押したときの絵が、生成を選んだときの絵と同じ
+    client = TestClient(app)
+    default = client.get("/seal/preview.png").content
+    generated = client.get("/seal/preview.png", params={"choice": "generated"}).content
+    assert default == generated
+
+
 def test_a_signature_that_lands_mid_flight_is_not_overwritten(
     fields_pdf: Path, dev_cert, tmp_path: Path
 ):
