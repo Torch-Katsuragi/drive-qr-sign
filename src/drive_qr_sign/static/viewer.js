@@ -1,4 +1,8 @@
 // 署名ページに書類を表示する。描画は pdf.js（同梱・Apache-2.0）で、
+//
+// ⚠同梱しているのは **legacy ビルド**。既定の modern ビルドは「最新のブラウザ」前提で、
+// 少し古い iPhone の Safari で落ちる。回覧板を回す相手の端末は選べないので、
+// 広く動くほうを取る（legacy でも Safari 18+ が pdf.js の言う対応範囲）。
 // サーバは PDF をそのまま渡すだけ。ページ画像に焼く方式と違って
 // サーバの CPU を使わず、拡大してもぼけず、文字を選択できる。
 
@@ -14,6 +18,18 @@ if (container) {
   window.reloadDocument = render;
 }
 
+/** しばらく経っても1枚も描けていなければ、黙って空白のままにしない。 */
+function warnIfBlank(container) {
+  setTimeout(() => {
+    if (container.querySelector("canvas")) return;
+    container.insertAdjacentHTML(
+      "beforeend",
+      '<p class="note">この端末では書類を表示できないようです。' +
+        '上の「開く」から直接ご覧ください（署名はこのままできます）。</p>'
+    );
+  }, 12000);
+}
+
 function render() {
   // 描き直しのあいだ背丈を保つ。空にした瞬間にページが縮むと、
   // ブラウザがスクロール位置を切り詰めて先頭へ飛ぶ
@@ -21,6 +37,7 @@ function render() {
   if (height) container.style.minHeight = `${height}px`;
   container.replaceChildren();
   revision += 1;
+  warnIfBlank(container);
   show(container)
     .then(() => {
       container.style.minHeight = "";
