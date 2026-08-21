@@ -48,7 +48,6 @@ async function show(container) {
 
   // 画面が細いほど拡大率を上げる必要はない。実寸の幅に合わせて描く
   const cssWidth = container.clientWidth;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
   // 見えたページだけ描く。分厚い書類でも開いた瞬間に全部描かない
   const observer = new IntersectionObserver(
@@ -56,11 +55,14 @@ async function show(container) {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         observer.unobserve(entry.target);
-        drawPage(pdf, entry.target, cssWidth, dpr);
+        drawPage(pdf, entry.target, cssWidth, sharpness());
       }
     },
     { rootMargin: "600px" }
   );
+
+  currentPdf = pdf;
+  watchZoom(container);
 
   const first = await pdf.getPage(1);
   const ratio = first.getViewport({ scale: 1 }).height / first.getViewport({ scale: 1 }).width;
@@ -74,6 +76,52 @@ async function show(container) {
     container.appendChild(page);
     observer.observe(page);
   }
+}
+
+// ⚠1回描いた画像をピンチで引き伸ばすと、拡大したときに粗い。
+// 端末の画素密度に**拡大の余地**を足した解像度で描いておき、拡大されたら描き直す。
+const ZOOM_HEADROOM = 2;   // このぶんまでは描き直さずに耐える
+const MAX_SHARPNESS = 6;   // これ以上は canvas が重くなるだけ。
+// ⚠iOS には canvas の面積・総量の上限がある。描き直すのは**見えているページだけ**に
+// しているのはそのため（分厚い書類で全ページを高解像度に持つと落ちる）
+
+function sharpness() {
+  const zoom = (window.visualViewport && window.visualViewport.scale) || 1;
+  const density = Math.min(window.devicePixelRatio || 1, 2);
+  return Math.min(density * ZOOM_HEADROOM * zoom, MAX_SHARPNESS);
+}
+
+/** ピンチで拡大されたら、その倍率で描き直す（引き伸ばした画像のままにしない）。 */
+function watchZoom(container) {
+  if (!window.visualViewport) return;
+  let drawnAt = sharpness();
+  let pending = null;
+  window.visualViewport.addEventListener("resize", () => {
+    const wanted = sharpness();
+    if (wanted <= drawnAt * 1.2) return;  // 誤差では描き直さない
+    clearTimeout(pending);
+    // 指を離してから描く。拡大の途中で何度も描くと固まる
+    pending = setTimeout(() => {
+      drawnAt = wanted;
+      container.querySelectorAll(".page").forEach((page) => {
+        page.dataset.redraw = "1";
+      });
+      redrawVisible(container, wanted);
+    }, 250);
+  });
+}
+
+let currentPdf = null;
+
+/** いま見えているページだけ、指定の細かさで描き直す。 */
+function redrawVisible(container, wanted) {
+  if (!currentPdf) return;
+  const view = { top: -200, bottom: window.innerHeight + 200 };
+  container.querySelectorAll(".page").forEach((element) => {
+    const box = element.getBoundingClientRect();
+    if (box.bottom < view.top || box.top > view.bottom) return;
+    drawPage(currentPdf, element, container.clientWidth, wanted);
+  });
 }
 
 async function drawPage(pdf, element, cssWidth, dpr) {
