@@ -51,7 +51,8 @@ where = ["src"]
 # 抜けると本番のコンテナで「Directory does not exist」で起動に失敗する
 drive_qr_sign = [
     "templates/*.html",
-    "static/*.js",
+    # ⚠拡張子で絞らない。html を足したときに取りこぼす（実際にやりかけた）
+    "static/*",
     "static/pdfjs/*",
     "assets/*",
 ]

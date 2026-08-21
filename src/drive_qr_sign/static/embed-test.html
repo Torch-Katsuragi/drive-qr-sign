@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drive 埋め込みの確認 | drive-qr-sign</title>
+<!--
+  Drive の /preview を iframe で埋めたとき、その端末で中身が見えるかを確かめるだけのページ。
+
+  ⚠直接 drive.google.com を開いて見えることは、埋め込みが動く証拠にならない。
+  直接なら Cookie はファーストパーティだが、埋め込むとサードパーティになり、
+  iOS Safari は既定でそれを遮断する。だから**埋め込んだ状態**で確かめる必要がある。
+
+  使い方: /static/embed-test.html?id=<DriveのfileId>
+-->
+<style>
+  body { margin: 0; padding: 1rem; font-family: system-ui, sans-serif; line-height: 1.7; }
+  iframe { width: 100%; height: 70vh; border: 1px solid #ccc; }
+  p { margin: .5rem 0; }
+  .note { font-size: .85rem; color: #666; }
+</style>
+</head>
+<body>
+<p><b>この下に書類が見えますか？</b></p>
+<p class="note">
+  見えれば「Drive の埋め込み」が使えます。ログインを求められたり真っ白なら、
+  この端末では埋め込みは使えません（署名ページの表示方法を変えない判断材料になります）。
+</p>
+<iframe id="frame" allow="autoplay"></iframe>
+<p class="note" id="what"></p>
+<script>
+  (function () {
+    var id = new URLSearchParams(location.search).get("id");
+    var frame = document.getElementById("frame");
+    var what = document.getElementById("what");
+    if (!id) {
+      what.textContent = "?id=<DriveのfileId> を付けて開いてください。";
+      return;
+    }
+    var url = "https://drive.google.com/file/d/" + id + "/preview";
+    frame.src = url;
+    what.textContent = "埋め込み先: " + url;
+  })();
+</script>
+</body>
+</html>
