@@ -18,18 +18,6 @@ if (container) {
   window.reloadDocument = render;
 }
 
-/** しばらく経っても1枚も描けていなければ、黙って空白のままにしない。 */
-function warnIfBlank(container) {
-  setTimeout(() => {
-    if (container.querySelector("canvas")) return;
-    container.insertAdjacentHTML(
-      "beforeend",
-      '<p class="note">この端末では書類を表示できないようです。' +
-        '上の「開く」から直接ご覧ください（署名はこのままできます）。</p>'
-    );
-  }, 12000);
-}
-
 function render() {
   // 描き直しのあいだ背丈を保つ。空にした瞬間にページが縮むと、
   // ブラウザがスクロール位置を切り詰めて先頭へ飛ぶ
@@ -37,7 +25,6 @@ function render() {
   if (height) container.style.minHeight = `${height}px`;
   container.replaceChildren();
   revision += 1;
-  warnIfBlank(container);
   show(container)
     .then(() => {
       container.style.minHeight = "";

@@ -172,6 +172,34 @@
          data-src="/s/{{ file_id }}/document.pdf?m={{ mac }}"
          data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
   </section>
+  {#
+    ⚠この見張りは **module ではない素のスクリプト**で、古い構文だけで書く。
+    viewer.js は module なので、その中に置くと「モジュールごと動かない端末」で
+    見張りも一緒に死ぬ。実際 iPhone で「何も出ない・メッセージも出ない」になった。
+  #}
+  <script>
+    (function () {
+      var box = document.getElementById("document");
+      if (!box) return;
+      var told = false;
+      function tell(detail) {
+        if (told) return;
+        told = true;
+        var note = document.createElement("p");
+        note.className = "note";
+        note.textContent =
+          "この端末では書類を表示できません。上の「開く」からご覧ください。" +
+          "署名はこのままできます。" + (detail ? "（" + detail + "）" : "");
+        box.parentNode.appendChild(note);
+      }
+      window.addEventListener("error", function (event) {
+        tell(event && event.message ? String(event.message).slice(0, 120) : "");
+      }, true);
+      setTimeout(function () {
+        if (!box.querySelector("canvas")) tell("");
+      }, 12000);
+    })();
+  </script>
   <script type="module" src="/static/viewer.js"></script>
   <script src="/static/sign.js"></script>
 {% endif %}
