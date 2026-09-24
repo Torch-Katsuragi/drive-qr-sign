@@ -7,6 +7,7 @@ Drive 実装はまだ無い。ここを Protocol にしてあるのは、
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -16,13 +17,24 @@ class DocumentNotFound(Exception):
     pass
 
 
+def field_mark(field_name: str) -> str:
+    """埋まっている欄を書類の外に書き留めるときの短い印。欄名そのものは書かない。"""
+    return hashlib.sha256(field_name.encode("utf-8")).hexdigest()[:8]
+
+
 @dataclass(frozen=True)
 class SharedDocument:
-    """一覧に並べる1件。中身は落とさず、名前とハッシュだけを持つ。"""
+    """一覧に並べる1件。中身は落とさず、名前とハッシュだけを持つ。
+
+    filled は、いまの中身について書き留めてある「埋まっている欄」の印（field_mark）。
+    書き留めが無いか、書き留めた後に中身が変わっていれば None で、そのときは
+    中身を落として確かめるしかない。
+    """
 
     file_id: str
     name: str
     content_hash: str | None = None
+    filled: frozenset[str] | None = None
 
 
 class DocumentStore(Protocol):
@@ -46,6 +58,12 @@ class DocumentStore(Protocol):
 
         ⚠ここが「一覧に出してよいか」の判定そのもの。返したものは、その人に
         見せてよい書類として扱われる。
+        """
+
+    def record_filled(self, file_id: str, content_hash: str, filled: list[str]) -> None:
+        """この中身で埋まっている欄を書き留める。次の一覧で filled として返す。
+
+        省略可（無ければ一覧のたびに中身を確かめる）。
         """
 
 

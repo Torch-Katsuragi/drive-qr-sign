@@ -4,14 +4,14 @@
 書類は Google Drive に置いたまま、署名者はいま使っている Google アカウントで押す。
 
 > **In English** — Keep circulating the paper; replace only the seal. Approvers scan the QR printed
-> on the page, sign in with the Google account they already have, and tap once. A PAdES signature
+> on the page, sign in with the Google account they already have, and sign what is waiting for them. A PAdES signature
 > and an RFC 3161 timestamp go into the PDF, and the original in Google Drive is updated in place.
 > No new accounts, no per-seat subscription, no moving documents elsewhere.
 > Docs and code comments are in Japanese.
 
 ```
-書類PDFをDriveに置く → QR付きで印刷して紙で回覧 → 読んだ人がQRを読む
-  → Googleでログイン → 中身を確認してワンタップ → PAdES署名＋タイムスタンプ
+書類PDFをDriveに置いて共有 → 印刷して紙で回覧 → 読んだ人がQRを読む
+  → Googleでログイン → 自分宛ての書類の一覧 → 中身を確認して署名 → PAdES署名＋タイムスタンプ
   → Driveの原本が新しい版として更新される
 ```
 
@@ -34,7 +34,7 @@
 
 ## 何をしないか
 
-- **書類の用意**。QR を紙面に載せることと、印影を出す位置に押印枠を置くこと。
+- **書類の用意**。QR（一覧の URL。どの書類も同じ）を紙面に載せることと、印影を出す位置に押印枠を置くこと。
   枠が無ければ、署名は紙面に出ない記録として残る
 - **ワークフロー管理**（未押印者の一覧・催促・期限）は持たない
 
@@ -62,7 +62,7 @@ py -3.14 -m venv .venv
 > ホイールが無く、ソースからのビルドに Visual Studio を要求されて止まる。
 > x64 版（エミュレーション）の Python なら、そのまま入る。
 
-署名ページを立てる（Google ログインも Drive も無しで一周できる）:
+アプリを立てる（Google ログインも Drive も無しで一周できる）:
 
 ```powershell
 .venv\Scripts\python.exe tools\build_sample.py

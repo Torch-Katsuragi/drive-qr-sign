@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from drive_qr_sign.documents import DocumentNotFound
+from drive_qr_sign.documents import DocumentNotFound, field_mark
 from drive_qr_sign.drive import DriveDocumentStore
 
 
@@ -36,7 +36,16 @@ class FakeFiles:
         token = kwargs.get("pageToken")
         return FakeRequest(self._drive.pages[int(token) if token else 0])
 
-    def update(self, fileId: str, media_body=None, fields=None):
+    def update(self, fileId: str, media_body=None, fields=None, body=None, supportsAllDrives=None):
+        if body is not None:
+            # メタデータだけの更新。None の鍵は消す（Drive と同じ）
+            properties = self._drive.app_properties.setdefault(fileId, {})
+            for key, value in body.get("appProperties", {}).items():
+                if value is None:
+                    properties.pop(key, None)
+                else:
+                    properties[key] = value
+            return FakeRequest({"id": fileId})
         self._drive.contents[fileId] = media_body.getbytes(0, media_body.size())
         self._drive.versions[fileId] = self._drive.versions.get(fileId, 1) + 1
         return FakeRequest({"id": fileId, "version": str(self._drive.versions[fileId])})
@@ -65,6 +74,7 @@ class FakeDrive:
         self.contents = dict(contents)
         self.shares = dict(shares or {})
         self.versions: dict[str, int] = {}
+        self.app_properties: dict[str, dict] = {}
         # files.list の返し（ページごと）と、呼ばれたときの引数
         self.pages: list[dict] = [{"files": []}]
         self.list_calls: list[dict] = []
@@ -183,6 +193,66 @@ def test_shared_with_asks_drive_for_that_persons_pdfs(store):
     assert "'kumiaicho@example.test' in readers" in query
     assert "'kumiaicho@example.test' in writers" in query
     assert drive.list_calls[1]["pageToken"] == "1"
+
+
+def test_filled_fields_come_back_with_the_listing(store):
+    """書き留めた「埋まっている欄」は、一覧の返しに乗って戻る（中身を落とさずに分けるため）。"""
+    document_store, drive = store
+    document_store.record_filled("a", "h1", ["組合長", "silent-x"])
+    drive.pages = [
+        {
+            "files": [
+                {"id": "a", "name": "a.pdf", "md5Checksum": "h1", "appProperties": drive.app_properties["a"]},
+                {"id": "b", "name": "b.pdf", "md5Checksum": "h2"},
+            ]
+        }
+    ]
+
+    a, b = document_store.shared_with("kumiaicho@example.test")
+
+    assert a.filled == {field_mark("組合長"), field_mark("silent-x")}
+    assert b.filled is None  # 書き留めが無い
+    assert "appProperties" in drive.list_calls[0]["fields"]
+
+
+def test_a_note_about_older_content_is_ignored(store):
+    """アプリの外で中身が変わったら、前の書き留めは使わない。"""
+    document_store, drive = store
+    document_store.record_filled("a", "old-hash", ["組合長"])
+    drive.pages = [
+        {"files": [{"id": "a", "name": "a.pdf", "md5Checksum": "new-hash", "appProperties": drive.app_properties["a"]}]}
+    ]
+
+    [a] = document_store.shared_with("kumiaicho@example.test")
+
+    assert a.filled is None
+
+
+def test_many_filled_fields_fit_in_drives_limits(store):
+    """回覧先が多いと不可視署名の欄が増える。値1つ124バイト・30個までの枠に収める。"""
+    document_store, drive = store
+    names = [f"silent-{i}" for i in range(100)]
+    document_store.record_filled("a", "h1", names)
+
+    properties = drive.app_properties["a"]
+    assert len(properties) <= 30
+    assert all(len(key.encode()) + len(value.encode()) <= 124 for key, value in properties.items())
+    drive.pages = [{"files": [{"id": "a", "name": "a.pdf", "md5Checksum": "h1", "appProperties": properties}]}]
+    [a] = document_store.shared_with("x@example.test")
+    assert a.filled == {field_mark(name) for name in names}
+
+
+def test_rewriting_the_note_drops_what_is_no_longer_filled(store):
+    """取り消しで欄が空いたら、書き留めからも消える。"""
+    document_store, drive = store
+    document_store.record_filled("a", "h1", [f"silent-{i}" for i in range(40)])
+    document_store.record_filled("a", "h2", ["組合長"])
+
+    drive.pages = [
+        {"files": [{"id": "a", "name": "a.pdf", "md5Checksum": "h2", "appProperties": drive.app_properties["a"]}]}
+    ]
+    [a] = document_store.shared_with("x@example.test")
+    assert a.filled == {field_mark("組合長")}
 
 
 def test_shared_with_cannot_be_used_to_widen_the_query(store):

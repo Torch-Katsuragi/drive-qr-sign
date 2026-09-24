@@ -20,10 +20,42 @@ import io
 import threading
 from pathlib import Path
 
-from .documents import DocumentNotFound, SharedDocument
+from .documents import DocumentNotFound, SharedDocument, field_mark
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 PDF_MIME = "application/pdf"
+
+# 埋まっている欄の書き留め（appProperties。このアプリにしか見えない）。
+# 値は1つ124バイトまで、アプリごとに1ファイル30個まで、という Drive の枠に収める。
+# 印（8文字）を15個ずつ詰めて FILLED_SLOTS 個に分け、どの中身についてのものかを FILLED_HASH_KEY に置く
+FILLED_HASH_KEY = "fm"
+FILLED_KEY = "f{}"
+FILLED_SLOTS = 29
+MARKS_PER_SLOT = 15
+
+
+def _encode_filled(content_hash: str, filled: list[str]) -> dict[str, str | None]:
+    marks = sorted({field_mark(name) for name in filled})
+    slots = ["".join(marks[i : i + MARKS_PER_SLOT]) for i in range(0, len(marks), MARKS_PER_SLOT)]
+    if len(slots) > FILLED_SLOTS:
+        # 書き切れない。書き留めないでおけば、一覧は中身を確かめる側へ落ちる
+        return {FILLED_HASH_KEY: None}
+    properties: dict[str, str | None] = {FILLED_HASH_KEY: content_hash}
+    for index in range(FILLED_SLOTS):
+        # 前に書いた分が残らないよう、使わない枠は消す
+        properties[FILLED_KEY.format(index)] = slots[index] if index < len(slots) else None
+    return properties
+
+
+def _decode_filled(properties: dict | None, content_hash: str | None) -> frozenset[str] | None:
+    """いまの中身についての書き留めなら、その印の集合。古い・無いなら None。"""
+    if not properties or not content_hash or properties.get(FILLED_HASH_KEY) != content_hash:
+        return None
+    marks = set()
+    for index in range(FILLED_SLOTS):
+        packed = properties.get(FILLED_KEY.format(index)) or ""
+        marks.update(packed[i : i + 8] for i in range(0, len(packed), 8))
+    return frozenset(marks)
 
 
 def service_account_email(credentials_file: Path | str) -> str:
@@ -179,7 +211,7 @@ class DriveDocumentStore:
                 self._service.files()
                 .list(
                     q=query,
-                    fields="nextPageToken, files(id, name, md5Checksum)",
+                    fields="nextPageToken, files(id, name, md5Checksum, appProperties)",
                     orderBy="modifiedTime desc",
                     pageSize=100,
                     pageToken=page_token,
@@ -189,10 +221,34 @@ class DriveDocumentStore:
                 .execute()
             )
             for item in response.get("files", []):
-                found.append(SharedDocument(item["id"], item.get("name") or item["id"], item.get("md5Checksum")))
+                content_hash = item.get("md5Checksum")
+                found.append(
+                    SharedDocument(
+                        item["id"],
+                        item.get("name") or item["id"],
+                        content_hash,
+                        _decode_filled(item.get("appProperties"), content_hash),
+                    )
+                )
             page_token = response.get("nextPageToken")
             if not page_token:
                 return found
+
+    def record_filled(self, file_id: str, content_hash: str, filled: list[str]) -> None:
+        """この中身で埋まっている欄を、ファイルのメタデータに書き留める。
+
+        一覧はこれを見て、中身を落とさずに「押したか」を分ける。書類が溜まっても
+        一覧を開くたびに全件を落とさずに済むのはこのため。中身のハッシュも一緒に
+        置くので、アプリの外で中身が変わった書類は古い書き留めとして無視される。
+
+        ⚠中身は変えない（md5 はそのまま）。ただし Drive の更新日時は進む。
+        """
+        self._service.files().update(
+            fileId=file_id,
+            body={"appProperties": _encode_filled(content_hash, filled)},
+            fields="id",
+            supportsAllDrives=True,
+        ).execute()
 
     def can_read(self, file_id: str, email: str) -> bool:
         """その人が Drive 上でこの書類を見られるか。

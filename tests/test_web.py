@@ -1,4 +1,4 @@
-"""署名ページ。
+"""書類の一覧と、そこから呼ぶ署名・取り消し。
 
 Google ログインと Drive は Protocol 越しなので、ここでは偽物を差し込んで検証する。
 TSA には出ない（tsa_url=None）。
@@ -12,14 +12,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import io
+import re
 
 from PIL import Image
 
-from drive_qr_sign.documents import LocalDocumentStore
+from drive_qr_sign.documents import LocalDocumentStore, SharedDocument, field_mark
 from drive_qr_sign.identity import SignerDirectory, SignerEntry, silent_field_name
 from drive_qr_sign.qr import make_mac
 from drive_qr_sign.signing import list_signature_fields, load_signer, sign_field
-from drive_qr_sign.web import STATIC_PREFIX, create_app
+from drive_qr_sign.web import STATIC_PREFIX, _csrf_token, create_app
 
 SECRET = b"test-secret-do-not-use"
 PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")  # PNG のマジックナンバー
@@ -86,7 +87,23 @@ def env(fields_pdf: Path, dev_cert, tmp_path: Path):
 
 
 def _url(file_id: str = FILE_ID, secret: bytes = SECRET) -> str:
+    """紙に刷った QR の URL（書類ごとの署名ページがあった頃のもの）。"""
     return f"/s/{file_id}?m={make_mac(secret, file_id)}"
+
+
+def _csrf(email: str, file_id: str = FILE_ID) -> str:
+    """一覧の行に埋めてあるのと同じ値。画面から拾わずに作る。"""
+    return _csrf_token(SECRET, file_id, email)
+
+
+def _detail(client, file_id: str = FILE_ID, mac: str | None = None):
+    """一覧で書類を開いたときに読む、押した人と取り消せるかどうか。"""
+    return client.get(f"/s/{file_id}/detail?m={mac or make_mac(SECRET, file_id)}")
+
+
+def _signed_rows(body: str) -> list[str]:
+    """署名済みの一覧に並んだ書類の file id。"""
+    return re.findall(r'data-revoke="/s/([^/"]+)/revoke', body)
 
 
 def test_status(env):
@@ -96,20 +113,22 @@ def test_status(env):
 
 
 def test_forged_qr_is_refused(env):
-    client, _, _ = env
-    assert client.get(f"/s/{FILE_ID}?m=deadbeef").status_code == 403
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    assert _detail(client, mac="deadbeef").status_code == 403
     # 別の鍵で作られた MAC も通らない
-    assert client.get(_url(secret=b"attacker")).status_code == 403
+    assert _detail(client, mac=make_mac(b"attacker", FILE_ID)).status_code == 403
 
 
 def test_unknown_document(env):
-    client, _, _ = env
-    assert client.get(_url("no-such-doc")).status_code == 404
+    client, identity, _ = env
+    identity.email = "kumiaicho@example.test"
+    assert _detail(client, "no-such-doc").status_code == 404
 
 
 def test_anonymous_visitor_is_asked_to_log_in(env):
     client, _, _ = env
-    body = client.get(_url()).text
+    body = client.get("/").text
     assert "ログイン" in body
     assert "<button" not in body  # 押せるボタンは出ない
 
@@ -117,28 +136,25 @@ def test_anonymous_visitor_is_asked_to_log_in(env):
 def test_signer_sees_their_own_field(env):
     client, identity, _ = env
     identity.email = "soumu@example.test"  # 対応表は大文字小文字を区別しない
-    body = client.get(_url()).text
-    assert "担当として署名する" in body
+    body = client.get("/").text
+    assert "担当欄" in body
 
 
 def test_stranger_cannot_sign(env):
-    """見る権限が無い人は押せない。
+    """見る権限が無い人には中身も押した人も見せない。
 
     本番ではこの判定が Drive の共有設定になる（開発用の既定は名簿で代用）。
     """
     client, identity, _ = env
     identity.email = "yoso@example.test"
-    body = client.get(_url()).text
-    assert "<button" not in body
-    assert "この書類を見る権限がありません" in body
+    assert _detail(client).status_code == 403
 
 
 def test_stranger_post_is_refused(env):
     client, identity, store_dir = env
     identity.email = "yoso@example.test"
     # csrf は自分のメールで計算できてしまうので、閲覧権の判定が最後の砦になる
-    csrf = _extract_csrf_for(client, identity, "kanji@example.test")
-    identity.email = "yoso@example.test"
+    csrf = _csrf("yoso@example.test")
 
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert response.status_code == 403
@@ -150,10 +166,10 @@ def test_person_without_a_field_signs_invisibly(env):
     client, identity, store_dir = env
     identity.email = "kanji@example.test"
 
-    body = client.get(_url()).text
-    assert "確認したことを記録する" in body
+    body = client.get("/").text
+    assert "確認の記録" in body
 
-    csrf = _extract_csrf(body)
+    csrf = _csrf(identity.email)
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     assert response.status_code == 200
@@ -168,9 +184,9 @@ def test_silent_signature_is_not_repeated(env):
     identity.email = "kanji@example.test"
     url = f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}"
 
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     assert client.post(url, data={"csrf": csrf}).status_code == 200
-    assert "確認済み" in client.get(_url()).text
+    assert _signed_rows(client.get("/?view=signed").text) == [FILE_ID]
     assert client.post(url, data={"csrf": csrf}).status_code == 409
 
 
@@ -179,7 +195,7 @@ def test_seal_lands_in_the_box(env, fields_pdf: Path):
     pdfium = pytest.importorskip("pypdfium2")
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     def render(path):
@@ -209,9 +225,9 @@ def test_viewer_is_shown_to_signers(env):
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
 
-    body = client.get(_url()).text
-    assert 'id="document"' in body
-    assert f"{STATIC_PREFIX}/viewer.js" in body
+    body = client.get("/").text
+    assert 'class="viewer"' in body
+    assert f"{STATIC_PREFIX}/inbox.js" in body
 
     response = client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}")
     assert response.status_code == 200
@@ -229,14 +245,13 @@ def test_document_is_not_shown_without_login(env):
     """QR は紙に刷られて出回る。URL を知っているだけでは中身を見せない。"""
     client, _, _ = env
     assert client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}").status_code == 401
-    assert 'id="document"' not in client.get(_url()).text
+    assert 'class="viewer"' not in client.get("/").text
 
 
 def test_document_is_not_shown_to_strangers(env):
     client, identity, _ = env
     identity.email = "yoso@example.test"
     assert client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}").status_code == 403
-    assert 'id="document"' not in client.get(_url()).text
 
 
 def _blue_png() -> bytes:
@@ -251,7 +266,7 @@ def test_uploaded_image_is_used_for_that_signature(env):
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
 
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     response = client.post(
         f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
         data={"csrf": csrf},
@@ -269,7 +284,7 @@ def test_uploaded_image_is_used_for_that_signature(env):
 def test_garbage_upload_is_refused(env):
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
 
     response = client.post(
         f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
@@ -298,7 +313,7 @@ def test_silent_signature_keeps_the_page_unchanged(env, fields_pdf: Path):
     pdfium = pytest.importorskip("pypdfium2")
     client, identity, store_dir = env
     identity.email = "kanji@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     def render(path) -> bytes:
@@ -309,16 +324,14 @@ def test_silent_signature_keeps_the_page_unchanged(env, fields_pdf: Path):
     assert render(store_dir / f"{FILE_ID}.signed.pdf") == render(fields_pdf)
 
 
-def _extract_csrf_for(client, identity, email: str) -> str:
-    identity.email = email
-    return _extract_csrf(client.get(_url()).text)
+
 
 
 def test_signing_fills_only_that_field(env):
     client, identity, store_dir = env
     identity.email = "soumu@example.test"
 
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     assert response.status_code == 200
@@ -333,7 +346,7 @@ def test_second_signer_does_not_erase_the_first(env):
 
     for email in ("soumu@example.test", "kumiaicho@example.test"):
         identity.email = email
-        csrf = _extract_csrf(client.get(_url()).text)
+        csrf = _csrf(identity.email)
         assert client.post(
             f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf}
         ).status_code == 200
@@ -348,7 +361,7 @@ def test_signing_twice_is_refused(env):
     identity.email = "soumu@example.test"
     url = f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}"
 
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     assert client.post(url, data={"csrf": csrf}).status_code == 200
     # 2回目は空欄が無いので弾かれる
     assert client.post(url, data={"csrf": csrf}).status_code == 409
@@ -378,34 +391,28 @@ def test_cannot_sign_a_field_that_is_not_yours(env):
     """
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     identity.email = "soumu@example.test"  # 途中で別人に入れ替わっても組合長欄は押せない
 
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert response.status_code == 403  # csrf が本人のものではない
 
 
-def _unsigned_boxes(html: str) -> str:
-    """「未署名の押印枠:」の行だけを取り出す（押した人の一覧と混ざらないように）。"""
-    return html.split("未署名の押印枠:")[1].split("</p>")[0]
 
 
-def _extract_csrf(html: str) -> str:
-    marker = 'name="csrf" value="'
-    start = html.index(marker) + len(marker)
-    return html[start : html.index('"', start)]
+
+
 
 
 def test_signer_can_take_back_their_own_signature(env):
     """押し間違えたときに取り消せること。"""
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]
 
-    body = client.get(_url()).text
-    assert "署名を取り消す" in body
+    assert _detail(client).json()["revocable"] is True
 
     response = client.post(f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert response.status_code == 200
@@ -418,7 +425,7 @@ def test_the_signing_account_is_always_on_screen(env):
     """誰として押すのかが、押す前に必ず見えていること。取り違えは後から直せない。"""
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
-    body = client.get(_url()).text
+    body = client.get("/").text
     assert '/account/icon.png' in body
     assert "kumiaicho@example.test" in body
 
@@ -441,28 +448,35 @@ def test_the_account_icon_is_the_same_picture_that_lands_on_paper(env):
 
 def test_the_account_is_not_shown_to_a_visitor_who_has_not_logged_in(env):
     client, _, _ = env
-    assert "/account/icon.png" not in client.get(_url()).text
+    assert "/account/icon.png" not in client.get("/").text
     assert client.get("/account/icon.png").status_code == 401
 
 
-def test_signing_comes_back_to_the_same_page(env):
-    """押した後に「署名しました」という画面へ移らず、同じ画面のボタンが入れ替わること。
-
-    完了画面は読むだけで、閉じる操作をもう1回させる。押した結果は書類とボタンを
-    見れば分かるので置かない。
-    """
+def test_signing_comes_back_to_the_list(env):
+    """押した書類は署名待ちから外れ、署名済みに移る。取り消しもそこからできる。"""
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
 
-    response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
+    response = client.post(
+        f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
+        data={"csrf": _csrf(identity.email)},
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 200
-    assert str(response.url).endswith(_url())  # 303 で署名ページへ戻っている
-    body = response.text
-    assert "組合長として署名する" not in body  # 押すボタンは消えて
-    assert "署名を取り消す" in body  # 同じ場所が取り消しに変わる
-    assert 'id="document"' in body  # 書類も一緒に出ている
+    assert response.status_code == 303  # JS が動かない端末は一覧へ戻る
+    assert response.headers["location"] == "/"
+    assert "data-action" not in client.get("/").text
+    signed = client.get("/?view=signed").text
+    assert _signed_rows(signed) == [FILE_ID]
+    assert "組合長欄" in signed
+
+
+def test_the_old_qr_leads_to_the_list(env):
+    """書類ごとの署名ページは廃止した。刷ってしまった QR は一覧へ案内する。"""
+    client, _, _ = env
+    response = client.get(_url(), follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/"
 
 
 def test_the_revoke_button_stays_greyed_out_when_locked(env):
@@ -470,13 +484,13 @@ def test_the_revoke_button_stays_greyed_out_when_locked(env):
     client, identity, _ = env
     for who in ("kumiaicho@example.test", "soumu@example.test"):
         identity.email = who
-        csrf = _extract_csrf(client.get(_url()).text)
+        csrf = _csrf(identity.email)
         client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     identity.email = "kumiaicho@example.test"
-    body = client.get(_url()).text
-    assert "disabled" in body
-    assert "いまは取り消せません" in body
+    # 署名済みの一覧には残り、開くと「取り消せない」と分かる（ボタンの灰色は inbox.js）
+    assert FILE_ID in _signed_rows(client.get("/?view=signed").text)
+    assert _detail(client).json()["revocable"] is False
 
 
 def test_cannot_take_back_once_someone_signed_after_you(env):
@@ -484,16 +498,15 @@ def test_cannot_take_back_once_someone_signed_after_you(env):
     client, identity, store_dir = env
 
     identity.email = "kumiaicho@example.test"
-    first = _extract_csrf(client.get(_url()).text)
+    first = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": first})
 
     identity.email = "soumu@example.test"
-    second = _extract_csrf(client.get(_url()).text)
+    second = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": second})
 
     identity.email = "kumiaicho@example.test"
-    body = client.get(_url()).text
-    assert "いまは取り消せません" in body
+    assert _detail(client).json()["revocable"] is False
     assert client.post(
         f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": first}
     ).status_code == 409
@@ -508,18 +521,18 @@ def test_the_last_signer_can_still_take_theirs_back(env):
     client, identity, store_dir = env
     for who in ("kumiaicho@example.test", "soumu@example.test"):
         identity.email = who
-        csrf = _extract_csrf(client.get(_url()).text)
+        csrf = _csrf(identity.email)
         client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
-    csrf = _extract_csrf(client.get(_url()).text)  # いまは soumu
+    csrf = _csrf(identity.email)  # いまは soumu
     assert client.post(
         f"/s/{FILE_ID}/revoke?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf}
     ).status_code == 200
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["組合長"]
 
 
-def test_one_screen_costs_one_trip_to_the_store(env):
-    """署名ページと書類本体で、同じものを2回取りに行かない。
+def test_opening_a_document_costs_one_trip_to_the_store(env):
+    """開いたときの押した人の一覧と書類本体で、同じものを2回取りに行かない。
 
     実測で、画面1枚のために Drive へ4往復していた（fetch 1.1秒・permissions.list 0.3秒）。
     体感の重さはここで、描画側ではなかった。
@@ -527,7 +540,7 @@ def test_one_screen_costs_one_trip_to_the_store(env):
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
 
-    client.get(_url())
+    _detail(client)
     client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}")
 
     assert client.store.fetches == 1
@@ -539,8 +552,10 @@ def test_the_document_is_not_fetched_for_someone_who_cannot_have_it(env):
     url = f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}"
 
     assert client.get(url).status_code == 401  # 未ログイン
+    assert _detail(client).status_code == 401
     identity.email = "yoso@example.test"
     assert client.get(url).status_code == 403  # 共有されていない
+    assert _detail(client).status_code == 403
     assert client.store.fetches == 0
 
 
@@ -548,7 +563,8 @@ def test_signing_never_builds_on_a_remembered_copy(env, dev_cert):
     """署名は必ず最新を土台にする。古い版に押すと、あいだの人の署名を落とす。"""
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)  # ここで手元に覚える
+    _detail(client)  # ここで手元に覚える
+    csrf = _csrf(identity.email)
 
     # 別の経路（別インスタンスの署名など）で、その間に担当欄が埋まる
     key, cert = dev_cert
@@ -571,14 +587,15 @@ def test_signing_never_builds_on_a_remembered_copy(env, dev_cert):
 
 
 def test_signing_does_not_download_what_it_already_has(env):
-    """画面を見てそのまま押したとき、書類を取りに行くのは1回だけ。
+    """開いて見てそのまま押したとき、書類を取りに行くのは1回だけ。
 
     「最新である」ことは版番号を聞けば分かる（数百バイト）。同じものを
     もう一度丸ごと落とす（1MB・1秒前後）必要はない。
     """
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
-    csrf = _extract_csrf(client.get(_url()).text)
+    _detail(client)
+    csrf = _csrf(identity.email)
 
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
@@ -609,7 +626,7 @@ def test_the_record_is_still_sent_when_the_answer_comes_first(fields_pdf: Path, 
         notifier=RecordingNotifier(),
     )
     client = TestClient(app)
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf(identity.email)
     client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
     assert [notice.signer_email for notice in sent] == ["kumiaicho@example.test"]
@@ -642,7 +659,7 @@ def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
         tsa_url=None,
     )
     client = TestClient(app)
-    assert "組合長" in _unsigned_boxes(client.get(_url()).text)
+    assert "組合長" in _detail(client).json()["empty_fields"]
 
     # 別の経路（別インスタンスなど）で組合長が押される
     signed = io.BytesIO()
@@ -656,7 +673,7 @@ def test_a_signature_made_elsewhere_shows_up_on_the_next_screen(
     )
     (store_dir / f"{FILE_ID}.signed.pdf").write_bytes(signed.getvalue())
 
-    assert "組合長" not in _unsigned_boxes(client.get(_url()).text)
+    assert "組合長" not in _detail(client).json()["empty_fields"]
 
 
 def test_the_document_links_to_the_original_in_drive(fields_pdf: Path, dev_cert, tmp_path: Path):
@@ -678,26 +695,23 @@ def test_the_document_links_to_the_original_in_drive(fields_pdf: Path, dev_cert,
         qr_secret=SECRET,
         tsa_url=None,
     )
-    body = TestClient(app).get(_url()).text
-    assert f"https://drive.google.com/file/d/{FILE_ID}/view" in body
-    # 見出しは置かない（本文中の "書類の中身" は CSS のコメントにも出るので、タグで見る）
-    assert "<h2" not in body
+    detail = _detail(TestClient(app)).json()
+    assert detail["document_url"] == f"https://drive.google.com/file/d/{FILE_ID}/view"
 
 
 def test_without_drive_the_app_still_offers_the_pdf(env):
-    """Drive を使わない導入先では、アプリが配る PDF への導線が残る。"""
+    """Drive を使わない導入先では、アプリが配る PDF への導線が残る（inbox.js が出す）。"""
     client, identity, _ = env
     identity.email = "kumiaicho@example.test"
-    body = client.get(_url()).text
-    assert "PDF を開く" in body
-    assert "drive.google.com" not in body
+    assert _detail(client).json()["document_url"] is None
+    assert f"/s/{FILE_ID}/document.pdf?m=" in client.get("/").text
 
 
 def test_the_signer_can_pick_which_seal_to_press(env):
     """押される絵をタップすると候補が並び、選んだものが押される。"""
     client, identity, store_dir = env
     identity.email = "kumiaicho@example.test"
-    body = client.get(_url()).text
+    body = client.get("/").text
 
     # アイコンを持たない開発用の身元確認なので、候補は「自動生成」だけ＋アップロード
     assert 'name="seal_choice" value="generated"' in body
@@ -738,7 +752,7 @@ def test_choosing_the_generated_seal_ignores_the_registered_image(fields_pdf: Pa
         tsa_url=None,
     )
     client = TestClient(app)
-    body = client.get(_url()).text
+    body = client.get("/").text
     assert 'value="registered"' in body  # 名簿の印影も候補に並ぶ
 
     chosen = Image.open(io.BytesIO(client.get("/seal/preview.png?choice=generated").content)).convert("RGB")
@@ -767,7 +781,7 @@ def test_the_account_icon_appears_as_a_choice_when_there_is_one(fields_pdf: Path
         qr_secret=SECRET,
         tsa_url=None,
     )
-    body = TestClient(app).get(_url()).text
+    body = TestClient(app).get("/").text
     assert 'value="icon"' in body
     assert "アカウントのアイコン" in body
 
@@ -799,7 +813,7 @@ def test_the_generated_seal_is_the_default_even_with_an_icon(
         qr_secret=SECRET,
         tsa_url=None,
     )
-    body = TestClient(app).get(_url()).text
+    body = TestClient(app).get("/").text
     # 選択肢は並び順がそのまま既定。生成がアイコンより先に来る
     assert body.index('value="generated"') < body.index('value="icon"')
 
@@ -861,7 +875,7 @@ def test_a_signature_that_lands_mid_flight_is_not_overwritten(
         tsa_url=None,
     )
     client = TestClient(app)
-    csrf = _extract_csrf(client.get(_url()).text)
+    csrf = _csrf("kumiaicho@example.test")
 
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
@@ -892,12 +906,13 @@ def test_a_document_without_your_seal_box_is_not_called_signed(sample_pdf: Path,
         tsa_url=None,
     )
     client = TestClient(app)
-    body = client.get(_url()).text
+    body = client.get("/").text
 
-    assert "署名済み" not in body
-    assert "確認したことを記録する" in body  # 紙面に出ない署名なら残せる
+    assert "data-action" in body  # 署名待ちに並ぶ
+    assert "確認の記録" in body  # 紙面に出ない署名なら残せる
+    assert _signed_rows(client.get("/?view=signed").text) == []
 
-    csrf = _extract_csrf(body)
+    csrf = _csrf("kumiaicho@example.test")
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
     assert response.status_code == 200
     assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == [
@@ -916,20 +931,21 @@ def test_who_has_signed_is_visible_including_the_invisible_ones(env):
     identity.email = "kumiaicho@example.test"  # 押印枠を持つ人
     client.post(
         f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
-        data={"csrf": _extract_csrf(client.get(_url()).text)},
+        data={"csrf": _csrf(identity.email)},
     )
     identity.email = "kanji@example.test"  # 押印枠を持たない人（不可視署名）
     client.post(
         f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}",
-        data={"csrf": _extract_csrf(client.get(_url()).text)},
+        data={"csrf": _csrf(identity.email)},
     )
 
     # 3人目（まだ押していない人）から見て、2人とも見えること
     identity.email = "soumu@example.test"
-    body = client.get(_url()).text
-    assert "2人が署名" in body  # ラベルは数だけ
-    assert "kumiaicho@example.test" in body  # 押すと出る一覧に、両方入っている
-    assert "kanji@example.test" in body
+    signed_by = _detail(client).json()["signed_by"]
+    assert signed_by == [
+        {"who": "kumiaicho@example.test", "role": "組合長"},
+        {"who": "kanji@example.test", "role": None},
+    ]
 
 
 # --- 署名待ちの一覧 ---------------------------------------------------------
@@ -989,12 +1005,12 @@ def test_the_inbox_lists_what_is_waiting_for_you(inbox):
     assert [action.split("/")[2] for action, _ in rows] == ["doc-a", "doc-b", "memo"]
     assert body.count("組合長欄") == 2
     assert "確認の記録" in body
-    # 行のリンクは QR と同じ MAC を持つ（署名ページがそのまま開ける）
-    assert f"/s/doc-a?m={make_mac(SECRET, 'doc-a')}" in body
+    # 開いたときに読む先は、行ごとの MAC を持つ
+    assert f"/s/doc-a/detail?m={make_mac(SECRET, 'doc-a')}" in body
 
 
 def test_the_inbox_signs_through_the_same_door_as_the_qr(inbox):
-    """一覧から押すのは署名ページと同じ POST。押した書類は一覧から消える。"""
+    """一覧から押す。押した書類は署名待ちから消え、署名済みに移る。"""
     client, identity, store_dir = inbox
     identity.email = "kumiaicho@example.test"
 
@@ -1005,6 +1021,7 @@ def test_the_inbox_signs_through_the_same_door_as_the_qr(inbox):
     assert list_signature_fields(store_dir / "doc-b.signed.pdf", filled=True) == ["組合長"]
     remaining = [action.split("/")[2] for action, _ in _inbox_rows(client.get("/").text)]
     assert remaining == ["memo"]
+    assert _signed_rows(client.get("/?view=signed").text) == ["doc-a", "doc-b"]
 
 
 def test_the_inbox_hides_what_you_already_signed_silently(inbox):
@@ -1042,8 +1059,8 @@ def test_opening_a_document_from_the_inbox_does_not_download_it_again(inbox):
     assert client.store.fetches == before
 
 
-def test_without_a_listing_store_the_inbox_points_to_the_qr(fields_pdf: Path, dev_cert, tmp_path: Path):
-    """一覧を出せない倉庫でも、画面は落ちずに QR へ案内する。"""
+def test_without_a_listing_store_the_inbox_says_so(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """一覧を出せない倉庫でも、画面は落ちずにそう伝える。"""
 
     class NoListing:
         def __init__(self, inner):
@@ -1066,4 +1083,115 @@ def test_without_a_listing_store_the_inbox_points_to_the_qr(fields_pdf: Path, de
         tsa_url=None,
     )
     body = TestClient(app).get("/").text
-    assert "QR から署名してください" in body
+    assert "一覧を出せません" in body
+
+
+def test_revoking_from_the_signed_list_puts_it_back(inbox):
+    """署名済みの一覧から取り消すと、署名待ちに戻る。"""
+    client, identity, store_dir = inbox
+    identity.email = "kumiaicho@example.test"
+    action, csrf = _inbox_rows(client.get("/").text)[0]
+    client.post(action, data={"csrf": csrf})
+
+    response = client.post(
+        f"/s/doc-a/revoke?m={make_mac(SECRET, 'doc-a')}",
+        data={"csrf": _csrf(identity.email, "doc-a")},
+        headers={"X-Requested-With": "inbox"},
+    )
+    assert response.json() == {"status": "revoked"}
+    assert list_signature_fields(store_dir / "doc-a.signed.pdf", filled=True) == []
+    assert "doc-a" in [a.split("/")[2] for a, _ in _inbox_rows(client.get("/").text)]
+    assert _signed_rows(client.get("/?view=signed").text) == []
+
+
+class MarkingStore(CountingStore):
+    """埋まっている欄を書き留められる倉庫（Drive の appProperties の代わり）。"""
+
+    def __init__(self, inner):
+        super().__init__(inner)
+        self.marks: dict[str, tuple[str, frozenset[str]]] = {}
+        self.fetched: list[str] = []
+
+    def fetch(self, file_id: str) -> bytes:
+        self.fetched.append(file_id)
+        return super().fetch(file_id)
+
+    def record_filled(self, file_id: str, content_hash: str, filled: list[str]) -> None:
+        self.marks[file_id] = (content_hash, frozenset(field_mark(name) for name in filled))
+
+    def shared_with(self, email: str):
+        found = []
+        for shared in self.inner.shared_with(email):
+            recorded = self.marks.get(shared.file_id)
+            filled = recorded[1] if recorded and recorded[0] == shared.content_hash else None
+            found.append(SharedDocument(shared.file_id, shared.name, shared.content_hash, filled))
+        return found
+
+
+def _marking_app(store, dev_cert):
+    key, cert = dev_cert
+    identity = FakeIdentityProvider("kumiaicho@example.test")
+    app = create_app(
+        document_store=store,
+        signer_directory=SignerDirectory(
+            {
+                "kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本"),
+                "kanji@example.test": None,
+            }
+        ),
+        identity_provider=identity,
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    return TestClient(app), identity
+
+
+def test_signed_documents_are_not_downloaded_to_list_them(
+    fields_pdf: Path, sample_pdf: Path, dev_cert, tmp_path: Path
+):
+    """署名済みの書類は溜まっていく。書き留めた欄を見て、中身を落とさずに署名済みへ回す。
+
+    覚え書き（プロセスの中）が消えた後、つまり Cloud Run が立ち上がり直した後でも
+    落とさないことを見る。
+    """
+    for name in ("doc-a", "doc-b"):
+        (tmp_path / f"{name}.pdf").write_bytes(fields_pdf.read_bytes())
+    store = MarkingStore(LocalDocumentStore(tmp_path))
+
+    client, identity = _marking_app(store, dev_cert)
+    client.post(f"/s/doc-a/sign?m={make_mac(SECRET, 'doc-a')}", data={"csrf": _csrf(identity.email, "doc-a")})
+
+    # 立ち上がり直した（覚え書きが空の）アプリで一覧を出す
+    fresh, _ = _marking_app(store, dev_cert)
+    store.fetched.clear()
+    body = fresh.get("/?view=signed").text
+
+    assert _signed_rows(body) == ["doc-a"]
+    assert store.fetched == ["doc-b"]  # 落としたのは、まだ押していない書類だけ
+
+
+def test_listing_writes_down_what_it_had_to_check(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """書き留めが無い書類は、確かめたついでに書き留める。次からは落とさない。"""
+    (tmp_path / "doc-a.pdf").write_bytes(fields_pdf.read_bytes())
+    store = MarkingStore(LocalDocumentStore(tmp_path))
+    client, _ = _marking_app(store, dev_cert)
+
+    client.get("/")
+
+    content_hash, filled = store.marks["doc-a"]
+    assert content_hash == store.content_hash("doc-a")
+    assert filled == frozenset()  # まだ誰も押していない
+
+
+def test_a_stale_note_is_not_trusted(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """書き留めた後にアプリの外で中身が変わったら、その書き留めは使わない。"""
+    (tmp_path / "doc-a.pdf").write_bytes(fields_pdf.read_bytes())
+    store = MarkingStore(LocalDocumentStore(tmp_path))
+    # 「組合長欄は埋まっている」と書き留めてあるが、それは別の中身についてのもの
+    store.marks["doc-a"] = ("some-older-content", frozenset({field_mark("組合長")}))
+    client, _ = _marking_app(store, dev_cert)
+
+    assert [a.split("/")[2] for a, _ in _inbox_rows(client.get("/").text)] == ["doc-a"]
+
+

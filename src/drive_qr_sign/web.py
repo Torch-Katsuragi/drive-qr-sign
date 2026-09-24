@@ -38,7 +38,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .documents import DocumentNotFound, DocumentStore
+from .documents import DocumentNotFound, DocumentStore, SharedDocument, field_mark
 from .identity import (
     SILENT_FIELD_PREFIX,
     IdentityProvider,
@@ -430,32 +430,82 @@ def create_app(
         )
         return fields_by_hash.put((file_id, _hash(pdf)), fields)
 
-    def _waiting_for(email: str) -> list[dict]:
-        """その人がまだ押していない書類。一覧画面に並べるもの。"""
+    def _remember_filled(file_id: str, pdf: bytes, filled: list[str] | None = None) -> None:
+        """埋まっている欄を倉庫に書き留める。次の一覧はこれで中身を落とさずに分けられる。
+
+        書き留めは速くするためだけのもので、失敗しても一覧が中身を確かめる側へ落ちるだけ。
+        """
+        record = getattr(document_store, "record_filled", None)
+        if record is None:
+            return
+        if filled is None:
+            filled = list_signature_fields(io.BytesIO(pdf), filled=True)
+        try:
+            record(file_id, _hash(pdf), filled)
+        except Exception:
+            logger.exception("埋まっている欄を書き留められなかった: %s", file_id)
+
+    def _row(shared: SharedDocument, email: str, role: str | None, state: str = "") -> dict:
+        return {
+            "file_id": shared.file_id,
+            "name": shared.name,
+            "mac": make_mac(qr_secret, shared.file_id),
+            "role": role,
+            "state": state,
+            "csrf": _csrf_token(qr_secret, shared.file_id, email),
+        }
+
+    def _listing(email: str) -> tuple[list[dict], list[dict]]:
+        """その人に共有されている書類を、署名待ちと署名済みに分ける。
+
+        ⚠署名済みの書類は溜まっていく。1件ずつ中身を落として確かめると、件数ぶん
+        待たせる（1件あたり数百ミリ秒〜1秒）。だから倉庫に書き留めた「埋まっている欄」
+        （record_filled）を見て、自分の欄が埋まっていれば中身を落とさずに署名済みへ回す。
+        落とすのは、書き留めが無い・古い書類と、まだ押していない書類だけになる。
+        """
         started = time.perf_counter()
-        waiting = []
+        role = signer_directory.role_for(email)
+        role_mark = field_mark(role) if role else None
+        silent_mark = field_mark(silent_field_name(email))
+        waiting, signed = [], []
         for shared in document_store.shared_with(email):
             # 一覧に出たこと自体が「見てよい」の根拠（shared_with の約束）。
             # 1件ずつ共有設定を問い合わせ直さずに済むよう、ここで覚えておく
             access.put((shared.file_id, email.strip().lower()), True)
+
+            if shared.filled is not None and role_mark in shared.filled:
+                signed.append(_row(shared, email, role))
+                continue
+            if shared.filled is not None and silent_mark in shared.filled:
+                signed.append(_row(shared, email, None))
+                continue
+
             try:
                 all_fields, empty_fields = _fields_of(shared.file_id, shared.content_hash)
             except DocumentNotFound:
                 continue  # 一覧を取ったあとに消された・共有を外された
-            mode, role = _mode_for(email, all_fields, empty_fields)
-            if mode not in SIGNABLE or _is_pending(shared.file_id, email):
-                continue
-            waiting.append(
-                {
-                    "file_id": shared.file_id,
-                    "name": shared.name,
-                    "mac": make_mac(qr_secret, shared.file_id),
-                    "role": role,
-                    "csrf": _csrf_token(qr_secret, shared.file_id, email),
-                }
-            )
-        logger.info("一覧: %s %d件 (%.0fms)", email, len(waiting), (time.perf_counter() - started) * 1000)
-        return waiting
+            if shared.filled is None and shared.content_hash:
+                # 書き留めが無い・古い。確かめたついでに書き留めておく（次からは落とさない）
+                remembered = documents.get(shared.file_id)
+                if remembered is not None and remembered[0] == shared.content_hash:
+                    filled = [name for name in all_fields if name not in empty_fields]
+                    _remember_filled(shared.file_id, remembered[1], filled)
+
+            mode, mode_role = _mode_for(email, all_fields, empty_fields)
+            if mode in SIGNABLE and _is_pending(shared.file_id, email):
+                signed.append(_row(shared, email, mode_role, "受付済み"))
+            elif mode in SIGNABLE:
+                waiting.append(_row(shared, email, mode_role))
+            else:
+                signed.append(_row(shared, email, mode_role))
+        logger.info(
+            "一覧: %s 待ち%d件 済み%d件 (%.0fms)",
+            email,
+            len(waiting),
+            len(signed),
+            (time.perf_counter() - started) * 1000,
+        )
+        return waiting, signed
 
     def _signed_by(pdf: bytes) -> list[dict]:
         """この書類に押されている署名の一覧。押印枠のものも、不可視のものも。
@@ -482,13 +532,9 @@ def create_app(
         field, signer = found
         return field if signer.strip().lower() == email.strip().lower() else None
 
-    def _back_to_sign_page(file_id: str, mac: str) -> RedirectResponse:
-        """押した後・取り消した後は、同じ画面に戻す。
-
-        「署名しました」という専用の画面は作らない。押した結果は書類とボタンの
-        状態を見れば分かるので、読む画面が1枚増えるだけになる。
-        """
-        return RedirectResponse(f"/s/{file_id}?m={mac}", status_code=303)
+    def _back_to_list(view: str = "") -> RedirectResponse:
+        """押した後・取り消した後は一覧へ戻す（JS が動かない端末の経路）。"""
+        return RedirectResponse(f"/?view={view}" if view else "/", status_code=303)
 
     def _reader(request: Request, file_id: str, mac: str) -> bytes:
         """書類の中身を見せてよい相手にだけ PDF を返す。
@@ -512,18 +558,27 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/", response_class=HTMLResponse)
-    def inbox(request: Request) -> HTMLResponse:
-        """署名待ちの一覧。QR を読まずに、まとめて押すための入口。"""
+    def inbox(request: Request, view: str = "") -> HTMLResponse:
+        """書類の一覧。署名の入口はここだけ（書類ごとの署名ページは廃止した）。
+
+        紙の QR も全部ここを指す。書類ごとに QR を刷り分けなくてよいので、
+        同じ QR をずっと使える。
+        """
         email = identity_provider.verified_email(request)
-        listing = getattr(document_store, "shared_with", None)
+        can_list = getattr(document_store, "shared_with", None) is not None
+        waiting, signed = _listing(email) if email and can_list else ([], [])
         return TEMPLATES.TemplateResponse(
             request=request,
             name="inbox.html",
             context={
                 "email": email,
                 "can_log_in": login_routes is not None,
-                "can_list": listing is not None,
-                "waiting": _waiting_for(email) if email and listing is not None else [],
+                "can_list": can_list,
+                "view": "signed" if view == "signed" else "waiting",
+                "waiting": waiting,
+                "signed": signed,
+                # 選べる印影。先頭が既定（_seal_source の落ちる順と同じ）
+                "seal_choices": _seal_choices(request, email) if email else [],
             },
         )
 
@@ -537,36 +592,28 @@ def create_app(
             headers={"Content-Disposition": "inline", "Cache-Control": "no-store"},
         )
 
-    @app.get("/s/{file_id}", response_class=HTMLResponse)
-    def sign_page(request: Request, file_id: str, m: str = "") -> HTMLResponse:
-        pdf = _load(file_id, m)
-        email = identity_provider.verified_email(request)
-        mode, role, empty_fields = _situation(pdf, email, file_id)
+    @app.get("/s/{file_id}")
+    def old_sign_page(file_id: str) -> RedirectResponse:
+        """書類ごとの署名ページは廃止した。刷ってしまった QR は一覧へ案内する。"""
+        return RedirectResponse("/", status_code=302)
 
-        return TEMPLATES.TemplateResponse(
-            request=request,
-            name="sign.html",
-            context={
-                "file_id": file_id,
-                "mac": m,
-                "email": email,
-                "role": role,
-                "mode": mode,
-                "empty_fields": empty_fields,
-                "csrf": _csrf_token(qr_secret, file_id, email) if email else "",
+    @app.get("/s/{file_id}/detail")
+    def document_detail(request: Request, file_id: str, m: str = "") -> JSONResponse:
+        """一覧で書類を開いたときに出す、押した人と取り消せるかどうか。
+
+        中身を読まないと分からないので、一覧を出すときではなく開いたときに問い合わせる。
+        """
+        pdf = _reader(request, file_id, m)
+        email = identity_provider.verified_email(request)
+        return JSONResponse(
+            {
+                "signed_by": _signed_by(pdf),
+                "empty_fields": list_signature_fields(io.BytesIO(pdf), filled=False),
                 # 取り消せるのは自分が最後の押し手のときだけ
-                "revocable": _revocable_field(pdf, email) if email else None,
-                # ログイン経路が無い（開発用の偽の身元確認）ときはボタンを出さない
-                "can_log_in": login_routes is not None,
-                # 中身を見せてよい相手か。未ログイン・共有されていない人にはビューアごと出さない
-                "can_read": mode not in {MODE_LOGIN, MODE_STRANGER},
-                # 原本を開く先。Drive にあるならそちらを指す（無ければアプリが配る PDF）
+                "revocable": _revocable_field(pdf, email) is not None,
                 "document_url": _web_url(file_id),
-                # 誰が押したか。紙に出ない署名もここでだけ見える
-                "signed_by": _signed_by(pdf) if mode not in {MODE_LOGIN, MODE_STRANGER} else [],
-                # 選べる印影。先頭が既定（_seal_source の落ちる順と同じ）
-                "seal_choices": _seal_choices(request, email) if email else [],
             },
+            headers={"Cache-Control": "no-store"},
         )
 
     def _run_job(job: SignJob) -> SignatureNotice | None:
@@ -636,6 +683,7 @@ def create_app(
                 documents.put(job.file_id, (_hash(signed_pdf), signed_pdf))
                 verified.put(job.file_id, True)
                 marks.append(("書き戻し", time.perf_counter()))
+                _remember_filled(job.file_id, signed_pdf)
 
             _log_breakdown("署名", marks)
             return SignatureNotice.create(
@@ -758,10 +806,9 @@ def create_app(
                 logger.exception("署名の予約を積めなかった: %s", file_id)
                 raise HTTPException(status_code=503, detail="受け付けられませんでした。もう一度押してください")
 
-        # 一覧からまとめて押すときは、画面を組み立てて返す必要が無い
         if request.headers.get("x-requested-with") == "inbox":
             return JSONResponse({"status": "accepted"}, status_code=202)
-        return _back_to_sign_page(file_id, m)
+        return _back_to_list()
 
     @app.post(TASK_PATH)
     def run_task(request: Request, payload: dict = Body(...)) -> Response:
@@ -780,7 +827,7 @@ def create_app(
     @app.post("/s/{file_id}/revoke")
     def do_revoke(
         request: Request, background: BackgroundTasks, file_id: str, m: str = "", csrf: str = Form("")
-    ) -> RedirectResponse:
+    ) -> Response:
         """押し間違えたときに、自分の署名を外す。
 
         外せるのは自分が最後の押し手のときだけ。後から誰かが押していたら、
@@ -819,6 +866,7 @@ def create_app(
             documents.put(file_id, (_hash(reverted), reverted))
             verified.put(file_id, True)
             marks.append(("書き戻し", time.perf_counter()))
+            _remember_filled(file_id, reverted)
 
         _log_breakdown("取り消し", marks)
 
@@ -836,11 +884,13 @@ def create_app(
             ),
         )
 
-        return _back_to_sign_page(file_id, m)
+        if request.headers.get("x-requested-with") == "inbox":
+            return JSONResponse({"status": "revoked"})
+        return _back_to_list("signed")
 
     @app.get("/seal/preview.png")
     def seal_preview(request: Request, choice: str = "") -> Response:
-        """いま押されることになる絵。署名ページに出す。
+        """いま押されることになる絵。一覧に出す。
 
         choice を渡すと、その候補の絵を返す（選ぶ画面に並べるため）。
         """

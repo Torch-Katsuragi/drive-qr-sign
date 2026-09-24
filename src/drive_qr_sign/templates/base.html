@@ -6,8 +6,7 @@
 <title>{% block title %}署名{% endblock %} | drive-qr-sign</title>
 <style>
   /*
-    スマホ（QR から来た人）と PC（Drive のリンクから開いた人）の両方が主用途。
-    1カラムを細く伸ばすのではなく、幅があるときは「説明」と「押す場所」を左右に分ける。
+    スマホ（紙の QR から来た人）と PC の両方が主用途。
   */
   :root {
     color-scheme: light dark;
@@ -100,15 +99,16 @@
   .doc { font-size: .8rem; color: var(--muted); margin: 0; }
   .head { padding-bottom: 1.25rem; border-bottom: 1px solid var(--line); }
   .who { font-size: .9rem; color: var(--muted); margin-top: 1.25rem; }
-  .role { font-size: clamp(1.5rem, 1.2rem + 2vw, 2.25rem); font-weight: 600; margin: 0 0 .5rem; }
   .note { font-size: .85rem; color: var(--muted); }
 
-  /* 押した人。数だけ出して、押すと誰かが分かる */
-  .counter {
-    width: auto; margin-top: .75rem; padding: .3rem .9rem;
-    background: none; border: 1px solid var(--line); border-radius: 999px;
-    color: var(--muted); font-weight: 400; font-size: .85rem;
+  /* 署名待ち／署名済みの切り替え */
+  .tabs { display: flex; gap: .5rem; margin: .5rem 0 1rem; }
+  .tabs a {
+    padding: .35rem 1rem; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--muted); text-decoration: none; font-size: .9rem;
   }
+  .tabs a[aria-current] { border-color: var(--seal); color: var(--ink); font-weight: 600; }
+  .tabs b { color: var(--seal); margin-left: .25rem; }
 
   .signed { margin: 0; padding: 0; list-style: none; font-size: .85rem; text-align: left; }
   .signed li {
@@ -117,13 +117,6 @@
   }
   .signed .address { flex: 1; overflow-wrap: anywhere; }
   .signed i { color: var(--muted); font-style: normal; }
-
-  /* 幅があるときだけ2カラム。押す場所を右に固めて、視線の行き先を1つにする */
-  .cols { display: grid; gap: clamp(1.25rem, 3vw, 2.5rem); align-items: start; }
-  @media (min-width: 34rem) {
-    .cols { grid-template-columns: minmax(0, 1fr) 15rem; }
-    .action { position: sticky; top: 1rem; }
-  }
 
   .action { display: grid; gap: .75rem; justify-items: center; text-align: center; }
   .action .note { margin: 0; }
@@ -182,11 +175,6 @@
   .choices .upload input[type=file] { font-size: .7rem; margin: 0; }
 
   /* 書類の中身。押す前に読めることが紙の代わりの最低条件 */
-  .document { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-  .document > .note { margin: 0 0 .5rem; }
-  /* 書類はカードの余白を打ち消して横いっぱいに出す。読むのが目的の場所なので、
-     紙の左右に額縁を作らない（スマホでは画面幅いっぱいになる） */
-  #document { margin: 1rem calc(-1 * var(--pad)) 0; }
   .page {
     position: relative; display: block; width: 100%; margin: 0 0 .75rem;
     border-block: 1px solid var(--line); overflow: hidden;
@@ -206,13 +194,9 @@
   }
   .textLayer ::selection { background: rgba(0, 100, 255, .3); }
   form { width: 100%; display: grid; gap: .75rem; }
-  .stamp-done {
-    margin: 0; padding: .6rem 1.5rem; border: 2px solid var(--seal); border-radius: .5rem;
-    color: var(--seal); font-weight: 700; letter-spacing: .2em;
-  }
 
-  /* 署名待ちの一覧。チェックボックスは行の左に浮かせ、書類名を押すと中身が開く。
-     開いた書類はカードの余白を打ち消して横いっぱいに出す（署名ページと同じ） */
+  /* 書類の一覧。チェックボックスは行の左に浮かせ、書類名を押すと中身が開く。
+     開いた書類はカードの余白を打ち消して横いっぱいに出す */
   .batch { gap: 1rem; }
   .select-all { font-size: .9rem; color: var(--muted); display: flex; gap: .5rem; align-items: center; }
   .inbox { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
@@ -233,7 +217,13 @@
   .item.done .state { color: var(--seal); font-weight: 600; }
   .item.done .name { color: var(--muted); }
   .item.failed .state { color: var(--seal); }
-  .item details > .aside { margin: 0 0 1rem; text-align: right; font-size: .8rem; }
+  /* 署名済みの一覧にはチェックボックスが無いので、左の空きを詰める */
+  .done-list .item summary { padding-left: 1.25rem; }
+  .item.revoked .state { color: var(--accent); }
+  .item .detail { display: grid; gap: .5rem; justify-items: start; margin: 0 0 1rem; }
+  .item .detail .signed { width: 100%; }
+  .item .detail .note { margin: 0; }
+  .item .detail button { width: auto; }
   .item .viewer { margin: 0 calc(-1 * var(--pad)) .5rem; }
   /* ⚠開いてから PDF が届くまで1〜2秒ある。そのあいだ何も出ないと、
      リンクを押さないと読めないように見える（実際にそう受け取られた） */

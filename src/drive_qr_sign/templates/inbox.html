@@ -2,10 +2,14 @@
 {% block content %}
 <header class="head">
   <div>
-    <h1>署名待ちの書類</h1>
-    <p class="doc">あなたに共有されていて、まだ署名していない書類</p>
+    <h1>署名する書類</h1>
+    <p class="doc">あなたに共有されている書類</p>
   </div>
 
+  {#
+    いま誰として押そうとしているかを常に画面に出す。押印の取り違えは
+    後から直せないので、押す直前に見えていることに意味がある。
+  #}
   {% if email %}
     <details class="account">
       <summary title="署名するアカウント"><img src="/account/icon.png" alt="{{ email }}"></summary>
@@ -24,7 +28,7 @@
 
 {% if not email %}
   <p class="who">未ログイン</p>
-  <p>Google アカウントでログインすると、あなた宛ての署名待ちの書類がまとめて表示されます。</p>
+  <p>Google アカウントでログインすると、あなた宛ての書類が表示されます。</p>
   <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
   {% if can_log_in %}
     <form method="get" action="/login">
@@ -34,65 +38,127 @@
   {% endif %}
 
 {% elif not can_list %}
-  <p>この環境では一覧を出せません。書類の QR から署名してください。</p>
-
-{% elif not waiting %}
-  <p class="who">{{ email }}</p>
-  <p>署名待ちの書類はありません。</p>
+  <p>この環境では一覧を出せません。</p>
 
 {% else %}
   <p class="who">{{ email }}</p>
+  <nav class="tabs">
+    <a href="/" {% if view == "waiting" %}aria-current="page"{% endif %}>署名待ち <b>{{ waiting | length }}</b></a>
+    <a href="/?view=signed" {% if view == "signed" %}aria-current="page"{% endif %}>署名済み <b>{{ signed | length }}</b></a>
+  </nav>
+
   {#
-    行はチェックボックスと書類名に分けてある。名前を押すと中身が開き、
-    PDF はそのとき初めて読み込む（開かない書類は落とさない）。
-    押すのは署名ページと同じ POST を1件ずつ呼ぶだけで、署名の経路は QR から来たときと同じ。
+    行を押すと中身が開き、PDF と押した人の一覧はそのとき初めて読み込む
+    （開かない書類は落とさない。溜まっていく署名済みの書類でも一覧が重くならない）。
   #}
-  <form id="batch" class="batch">
-    <label class="select-all"><input type="checkbox" id="select-all"> すべて選択</label>
+  {% macro body(item) %}
+    <div class="detail" data-src="/s/{{ item.file_id }}/detail?m={{ item.mac }}"></div>
+    <div class="viewer"
+         data-src="/s/{{ item.file_id }}/document.pdf?m={{ item.mac }}"
+         data-worker="{{ static }}/pdfjs/pdf.worker.min.mjs"></div>
+  {% endmacro %}
 
-    <ul class="inbox">
-      {% for item in waiting %}
-        <li class="item"
-            data-action="/s/{{ item.file_id }}/sign?m={{ item.mac }}"
-            data-csrf="{{ item.csrf }}">
-          <input type="checkbox" class="pick" aria-label="{{ item.name }} を選ぶ">
-          <details>
-            <summary>
-              <span class="name">{{ item.name }}</span>
-              <span class="tag">{% if item.role %}{{ item.role }}欄{% else %}確認の記録{% endif %}</span>
-              <span class="state" aria-live="polite"></span>
-            </summary>
-            {# 開いた瞬間に読み込みが始まる。届くまでは紙の形の枠と「読み込み中」を出す（CSS） #}
-            <div class="viewer"
-                 data-src="/s/{{ item.file_id }}/document.pdf?m={{ item.mac }}"
-                 data-worker="{{ static }}/pdfjs/pdf.worker.min.mjs"></div>
-            <p class="note aside">
-              印影を選んで押したいときは<a href="/s/{{ item.file_id }}?m={{ item.mac }}">この書類の署名ページ</a>から
-            </p>
-          </details>
-        </li>
-      {% endfor %}
-    </ul>
+  {% if view == "waiting" %}
+    {% if not waiting %}
+      <p>署名待ちの書類はありません。</p>
+    {% else %}
+      <form id="batch" class="batch" enctype="multipart/form-data">
+        <label class="select-all"><input type="checkbox" id="select-all"> すべて選択</label>
 
-    <div class="action">
-      {% if waiting | selectattr("role") | list %}
-        <img class="seal" src="/seal/preview.png" alt="押される印影">
-        <p class="note">押印枠にはこの印影が入ります。変えたいときは各書類の署名ページから押してください。</p>
-      {% endif %}
-      <button type="submit" id="batch-sign" disabled>選んだ書類に署名する</button>
-      <p class="note" id="batch-fallback" hidden>
-        この端末ではまとめて署名できません。各書類の「署名ページを開く」から押してください。
-      </p>
-    </div>
-  </form>
+        <ul class="inbox">
+          {% for item in waiting %}
+            <li class="item"
+                data-action="/s/{{ item.file_id }}/sign?m={{ item.mac }}"
+                data-csrf="{{ item.csrf }}">
+              <input type="checkbox" class="pick" aria-label="{{ item.name }} を選ぶ">
+              <details>
+                <summary>
+                  <span class="name">{{ item.name }}</span>
+                  <span class="tag">{% if item.role %}{{ item.role }}欄{% else %}確認の記録{% endif %}</span>
+                  <span class="state" aria-live="polite"></span>
+                </summary>
+                {{ body(item) }}
+              </details>
+            </li>
+          {% endfor %}
+        </ul>
 
-  {# ⚠module ではない素のスクリプトで見張る。module ごと動かない端末では、ボタンが押せないまま黙る #}
-  <script>
-    setTimeout(function () {
-      if (document.getElementById("batch-sign").dataset.ready) return;
-      document.getElementById("batch-fallback").hidden = false;
-    }, 8000);
-  </script>
-  <script type="module" src="{{ static }}/inbox.js"></script>
+        <div class="action">
+          {% if waiting | selectattr("role") | list %}
+            {% set seal_labels = {"registered": "名簿の印影", "icon": "アカウントのアイコン", "generated": "自動生成"} %}
+            {#
+              押される絵そのものが、印影を選ぶ入口。タップすると背景を暗くして候補が出る。
+              選んだ印影は、今回まとめて押す押印枠すべてに使う。
+
+              ⚠dialog は form の中に置く。外に出すと、選んだ値が一緒に送られない。
+            #}
+            <button type="button" class="as-seal" data-opens="seal-dialog" title="印影を選ぶ">
+              <img class="seal" id="seal-preview" src="/seal/preview.png" alt="押される印影">
+            </button>
+            <p class="note">押印枠にはこの印影が入ります。押すと変えられます。</p>
+
+            <dialog id="seal-dialog" class="seals">
+              <p class="who">押す印影を選ぶ</p>
+              <div class="choices">
+                {% for choice in seal_choices %}
+                  <label>
+                    <input type="radio" name="seal_choice" value="{{ choice }}"
+                           data-preview="/seal/preview.png?choice={{ choice }}"
+                           {% if loop.first %}checked{% endif %}>
+                    <img src="/seal/preview.png?choice={{ choice }}" alt="">
+                    <span>{{ seal_labels.get(choice, choice) }}</span>
+                  </label>
+                {% endfor %}
+                <label class="upload">
+                  <span>画像をアップロード</span>
+                  <input type="file" name="seal_image" accept="image/*">
+                </label>
+              </div>
+              <p class="note">選んだ印影は今回の署名にだけ使います。保存はしません。</p>
+              <button type="button" class="quiet" data-closes>閉じる</button>
+            </dialog>
+          {% endif %}
+          <button type="submit" id="batch-sign" disabled>選んだ書類に署名する</button>
+          <p class="note" id="batch-fallback" hidden>
+            この端末では署名できません。別のブラウザか PC で開いてください。
+          </p>
+        </div>
+      </form>
+    {% endif %}
+
+  {% else %}
+    {% if not signed %}
+      <p>署名済みの書類はありません。</p>
+    {% else %}
+      <ul class="inbox done-list" id="signed">
+        {% for item in signed %}
+          <li class="item"
+              data-revoke="/s/{{ item.file_id }}/revoke?m={{ item.mac }}"
+              data-csrf="{{ item.csrf }}">
+            <details>
+              <summary>
+                <span class="name">{{ item.name }}</span>
+                <span class="tag">{% if item.role %}{{ item.role }}欄{% else %}確認の記録{% endif %}</span>
+                <span class="state" aria-live="polite">{{ item.state }}</span>
+              </summary>
+              {{ body(item) }}
+            </details>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endif %}
+
+  {% if (view == "waiting" and waiting) or (view == "signed" and signed) %}
+    {# ⚠module ではない素のスクリプトで見張る。module ごと動かない端末では、ボタンが押せないまま黙る #}
+    <script>
+      setTimeout(function () {
+        if (document.body.dataset.ready) return;
+        var note = document.getElementById("batch-fallback");
+        if (note) note.hidden = false;
+      }, 8000);
+    </script>
+    <script type="module" src="{{ static }}/inbox.js"></script>
+  {% endif %}
 {% endif %}
 {% endblock %}

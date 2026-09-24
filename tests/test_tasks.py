@@ -100,10 +100,6 @@ def app_env(fields_pdf: Path, dev_cert, tmp_path: Path):
     return client, identity, queue, notifier, store, tmp_path
 
 
-def _page(client):
-    return client.get(f"/s/{FILE_ID}?m={make_mac(SECRET, FILE_ID)}").text
-
-
 def _press(client, **headers):
     """署名ボタンを押す。CSRF は画面から拾わずに作る（受付済みの画面にはフォームが無い）。"""
     from drive_qr_sign.web import _csrf_token
@@ -140,7 +136,7 @@ def test_pressing_only_takes_the_order(app_env):
     response = _press(client)
 
     assert response.status_code == 200
-    assert "署名を受け付けました" in response.text
+    assert "受付済み" in client.get("/?view=signed").text
     assert len(queue.jobs) == 1
     assert queue.jobs[0].role == "組合長"
     assert queue.jobs[0].stamp_png  # 印影は押した時点の絵で持っていく
@@ -178,7 +174,7 @@ def test_the_queue_signs_and_sends_the_record(app_env):
     [(field, who)] = list_signatures((root / f"{FILE_ID}.signed.pdf").read_bytes())
     assert (field, who) == ("組合長", "kumiaicho@example.test")
     assert [n.failure for n in notifier.sent] == [None]
-    assert "署名済み" in _page(client)
+    assert "data-revoke" in client.get("/?view=signed").text
 
 
 def test_the_same_order_delivered_twice_signs_once(app_env):
@@ -230,7 +226,7 @@ def test_the_signer_is_told_when_the_last_try_fails(app_env):
     assert notice.failure
     # 受付済みの表示は外れ、もう一度押せる
     store.failures = 0
-    assert "組合長として署名する" in _page(client)
+    assert "data-action" in client.get("/").text
 
 
 def test_an_order_that_can_never_succeed_is_not_retried(app_env):
@@ -332,4 +328,4 @@ def test_the_dev_queue_signs_in_the_background(fields_pdf: Path, dev_cert, tmp_p
     assert _press(client).status_code == 200
     queue.join()
     assert _signed_fields(tmp_path) == ["組合長"]
-    assert "署名済み" in _page(client)
+    assert "data-revoke" in client.get("/?view=signed").text

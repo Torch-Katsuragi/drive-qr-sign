@@ -32,7 +32,6 @@ from drive_qr_sign.drive import DriveDocumentStore, build_service
 from drive_qr_sign.google_identity import ClientSecrets, GoogleIdentityProvider
 from drive_qr_sign.identity import SignerDirectory, SignerEntry
 from drive_qr_sign.notify import GmailNotifier, build_gmail_service
-from drive_qr_sign.qr import sign_url
 from drive_qr_sign.signing import load_signer
 from drive_qr_sign.tasks import ThreadQueue
 from drive_qr_sign.web import create_app
@@ -222,15 +221,13 @@ def main() -> None:
     if is_fake:
         app.middleware("http")(remember_dev_identity)
 
-    url = sign_url(PUBLIC_ORIGIN, DEV_QR_SECRET, file_id)
-    print(f"署名待ちの一覧: {PUBLIC_ORIGIN}/" + ("?as=<メールアドレス>" if is_fake else ""))
-    print("QR に焼く URL（開発用）:")
+    # 入口は一覧だけ（書類ごとの署名ページは廃止した）。QR に焼くのもこの URL
+    print(f"一覧: {PUBLIC_ORIGIN}/")
     if is_fake:
         for email, entry in signers.items():
             label = entry.role if entry else "サイレント"
-            print(f"  {label:<6} {url}&as={email}")
+            print(f"  {label:<6} {PUBLIC_ORIGIN}/?as={email}")
     else:
-        print(f"  {url}")
         print("  ログインするアカウントは、下の名簿に載っているものにする:")
         for email, entry in signers.items():
             print(f"    {(entry.role if entry else 'サイレント'):<6} {email}")

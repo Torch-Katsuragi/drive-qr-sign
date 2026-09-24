@@ -1,4 +1,4 @@
-// 署名ページに書類を表示する。描画は pdf.js（同梱・Apache-2.0）で、
+// 一覧で開いた書類を表示する。描画は pdf.js（同梱・Apache-2.0）で、
 //
 // ⚠同梱しているのは **legacy ビルド**。既定の modern ビルドは「最新のブラウザ」前提で、
 // 少し古い iPhone の Safari で落ちる。回覧板を回す相手の端末は選べないので、
@@ -8,19 +8,10 @@
 
 import * as pdfjs from "./pdfjs/pdf.min.mjs";
 
-// 署名ページの書類は開いた時点で描く
-const single = document.getElementById("document");
-if (single) {
-  const render = attachViewer(single);
-  render();
-  // 署名・取り消しの直後に、書類だけを描き直すための入口（static/sign.js から呼ぶ）
-  window.reloadDocument = render;
-}
-
 /**
  * container に書類を描く関数を返す。呼ぶたびに最新の版を取り直して描き直す。
  *
- * 一覧画面では書類ごとに1つずつ持つ。描くのは呼ばれたときだけなので、
+ * 書類ごとに1つずつ持つ。描くのは呼ばれたときだけなので、
  * 開かれなかった書類は落としもしない。
  */
 export function attachViewer(container) {
