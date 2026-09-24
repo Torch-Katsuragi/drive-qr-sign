@@ -19,7 +19,7 @@ from drive_qr_sign.documents import LocalDocumentStore
 from drive_qr_sign.identity import SignerDirectory, SignerEntry, silent_field_name
 from drive_qr_sign.qr import make_mac
 from drive_qr_sign.signing import list_signature_fields, load_signer, sign_field
-from drive_qr_sign.web import create_app
+from drive_qr_sign.web import STATIC_PREFIX, create_app
 
 SECRET = b"test-secret-do-not-use"
 PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")  # PNG のマジックナンバー
@@ -211,7 +211,7 @@ def test_viewer_is_shown_to_signers(env):
 
     body = client.get(_url()).text
     assert 'id="document"' in body
-    assert "/static/viewer.js" in body
+    assert f"{STATIC_PREFIX}/viewer.js" in body
 
     response = client.get(f"/s/{FILE_ID}/document.pdf?m={make_mac(SECRET, FILE_ID)}")
     assert response.status_code == 200
@@ -221,8 +221,8 @@ def test_viewer_is_shown_to_signers(env):
 def test_pdfjs_is_served_from_this_app(env):
     """外部 CDN に依存しない。ネットワークを絞った導入先でも動くこと。"""
     client, _, _ = env
-    assert client.get("/static/pdfjs/pdf.min.mjs").status_code == 200
-    assert client.get("/static/pdfjs/pdf.worker.min.mjs").status_code == 200
+    assert client.get(f"{STATIC_PREFIX}/pdfjs/pdf.min.mjs").status_code == 200
+    assert client.get(f"{STATIC_PREFIX}/pdfjs/pdf.worker.min.mjs").status_code == 200
 
 
 def test_document_is_not_shown_without_login(env):

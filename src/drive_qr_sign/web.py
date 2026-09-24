@@ -64,6 +64,23 @@ from .signing import (
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 STATIC_DIR = Path(__file__).parent / "static"
 
+
+def _static_version() -> str:
+    """static/ の中身から決まる版。中身が変われば URL が変わる。"""
+    digest = hashlib.md5()
+    for path in sorted(STATIC_DIR.rglob("*")):
+        if path.is_file():
+            digest.update(path.relative_to(STATIC_DIR).as_posix().encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+# ⚠静的ファイルは版つきの URL で配る。版なしだとブラウザが前の版を期限の推測で
+# 使い回し、module の import が新旧で食い違って動かなくなる（2026-09-24 に Pixel で
+# 一括署名が止まった）。module 内の import は相対なので、入口の URL だけ変えれば足りる
+STATIC_PREFIX = f"/static/{_static_version()}"
+TEMPLATES.env.globals["static"] = STATIC_PREFIX
+
 logger = logging.getLogger(__name__)
 
 # 画面の状態。テンプレートの分岐と POST の可否がこの1つで決まる
@@ -160,7 +177,7 @@ def create_app(
 
     # pdf.js とビューアの読み込み口。外部 CDN は使わない
     # （導入先がネットワークを絞っていても動くこと、依存先が消えないことを優先する）
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.mount(STATIC_PREFIX, StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # ログイン経路を持つ IdentityProvider（Google OIDC など）はここで生える。
     # 偽の身元確認を差した開発用サーバでは router が無いので、何も生えない

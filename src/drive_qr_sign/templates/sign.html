@@ -178,7 +178,7 @@
     </p>
     <div id="document"
          data-src="/s/{{ file_id }}/document.pdf?m={{ mac }}"
-         data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
+         data-worker="{{ static }}/pdfjs/pdf.worker.min.mjs"></div>
   </section>
   {#
     ⚠この見張りは **module ではない素のスクリプト**で、古い構文だけで書く。
@@ -208,7 +208,7 @@
       }, 12000);
     })();
   </script>
-  <script type="module" src="/static/viewer.js"></script>
-  <script src="/static/sign.js"></script>
+  <script type="module" src="{{ static }}/viewer.js"></script>
+  <script src="{{ static }}/sign.js"></script>
 {% endif %}
 {% endblock %}

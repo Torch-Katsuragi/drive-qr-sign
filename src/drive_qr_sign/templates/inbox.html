@@ -65,7 +65,7 @@
             {# 開いた瞬間に読み込みが始まる。届くまでは紙の形の枠と「読み込み中」を出す（CSS） #}
             <div class="viewer"
                  data-src="/s/{{ item.file_id }}/document.pdf?m={{ item.mac }}"
-                 data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
+                 data-worker="{{ static }}/pdfjs/pdf.worker.min.mjs"></div>
             <p class="note aside">
               印影を選んで押したいときは<a href="/s/{{ item.file_id }}?m={{ item.mac }}">この書類の署名ページ</a>から
             </p>
@@ -93,6 +93,6 @@
       document.getElementById("batch-fallback").hidden = false;
     }, 8000);
   </script>
-  <script type="module" src="/static/inbox.js"></script>
+  <script type="module" src="{{ static }}/inbox.js"></script>
 {% endif %}
 {% endblock %}
