@@ -53,6 +53,9 @@ class CountingStore:
     def content_hash(self, file_id: str):
         return self.inner.content_hash(file_id)
 
+    def shared_with(self, email: str):
+        return self.inner.shared_with(email)
+
 
 @pytest.fixture
 def env(fields_pdf: Path, dev_cert, tmp_path: Path):
@@ -927,3 +930,140 @@ def test_who_has_signed_is_visible_including_the_invisible_ones(env):
     assert "2人が署名" in body  # ラベルは数だけ
     assert "kumiaicho@example.test" in body  # 押すと出る一覧に、両方入っている
     assert "kanji@example.test" in body
+
+
+# --- 署名待ちの一覧 ---------------------------------------------------------
+
+
+@pytest.fixture
+def inbox(fields_pdf: Path, sample_pdf: Path, dev_cert, tmp_path: Path):
+    """押印枠つきの書類2件と、押印枠の無い書類1件を置いた倉庫。"""
+    store_dir = tmp_path / "inbox"
+    store_dir.mkdir()
+    for name in ("doc-a", "doc-b"):
+        (store_dir / f"{name}.pdf").write_bytes(fields_pdf.read_bytes())
+    (store_dir / "memo.pdf").write_bytes(sample_pdf.read_bytes())
+
+    key, cert = dev_cert
+    identity = FakeIdentityProvider()
+    store = CountingStore(LocalDocumentStore(store_dir))
+    app = create_app(
+        document_store=store,
+        signer_directory=SignerDirectory(
+            {
+                "kumiaicho@example.test": SignerEntry(role="組合長", seal_text="松本"),
+                "kanji@example.test": None,
+            }
+        ),
+        identity_provider=identity,
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    client = TestClient(app)
+    client.store = store
+    return client, identity, store_dir
+
+
+def _inbox_rows(body: str) -> list[tuple[str, str]]:
+    """一覧の各行の (署名 POST 先, csrf)。"""
+    import re
+
+    return re.findall(r'data-action="([^"]+)"\s+data-csrf="([^"]+)"', body)
+
+
+def test_the_inbox_asks_visitors_to_log_in(inbox):
+    client, _, _ = inbox
+    body = client.get("/").text
+    assert "ログイン" in body
+    assert "data-action" not in body
+
+
+def test_the_inbox_lists_what_is_waiting_for_you(inbox):
+    """押印枠が空いている書類は欄つきで、枠の無い書類は確認の記録として並ぶ。"""
+    client, identity, _ = inbox
+    identity.email = "kumiaicho@example.test"
+    body = client.get("/").text
+
+    rows = _inbox_rows(body)
+    assert [action.split("/")[2] for action, _ in rows] == ["doc-a", "doc-b", "memo"]
+    assert body.count("組合長欄") == 2
+    assert "確認の記録" in body
+    # 行のリンクは QR と同じ MAC を持つ（署名ページがそのまま開ける）
+    assert f"/s/doc-a?m={make_mac(SECRET, 'doc-a')}" in body
+
+
+def test_the_inbox_signs_through_the_same_door_as_the_qr(inbox):
+    """一覧から押すのは署名ページと同じ POST。押した書類は一覧から消える。"""
+    client, identity, store_dir = inbox
+    identity.email = "kumiaicho@example.test"
+
+    for action, csrf in _inbox_rows(client.get("/").text)[:2]:
+        assert client.post(action, data={"csrf": csrf}).status_code == 200
+
+    assert list_signature_fields(store_dir / "doc-a.signed.pdf", filled=True) == ["組合長"]
+    assert list_signature_fields(store_dir / "doc-b.signed.pdf", filled=True) == ["組合長"]
+    remaining = [action.split("/")[2] for action, _ in _inbox_rows(client.get("/").text)]
+    assert remaining == ["memo"]
+
+
+def test_the_inbox_hides_what_you_already_signed_silently(inbox):
+    client, identity, _ = inbox
+    identity.email = "kanji@example.test"
+    rows = _inbox_rows(client.get("/").text)
+    assert len(rows) == 3
+
+    action, csrf = rows[0]
+    assert client.post(action, data={"csrf": csrf}).status_code == 200
+    assert len(_inbox_rows(client.get("/").text)) == 2
+
+
+def test_the_inbox_does_not_download_unchanged_documents_again(inbox):
+    """一覧のたびに全件落とすと件数ぶん待たせる。中身が同じなら前の判定を使う。"""
+    client, identity, _ = inbox
+    identity.email = "kumiaicho@example.test"
+
+    client.get("/")
+    first = client.store.fetches
+    assert first == 3
+    client.get("/")
+    assert client.store.fetches == first
+
+
+def test_opening_a_document_from_the_inbox_does_not_download_it_again(inbox):
+    """一覧のために落とした中身は、開いて読むときにも使う。"""
+    client, identity, _ = inbox
+    identity.email = "kumiaicho@example.test"
+
+    client.get("/")
+    before = client.store.fetches
+    response = client.get(f"/s/doc-a/document.pdf?m={make_mac(SECRET, 'doc-a')}")
+    assert response.status_code == 200
+    assert client.store.fetches == before
+
+
+def test_without_a_listing_store_the_inbox_points_to_the_qr(fields_pdf: Path, dev_cert, tmp_path: Path):
+    """一覧を出せない倉庫でも、画面は落ちずに QR へ案内する。"""
+
+    class NoListing:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def fetch(self, file_id):
+            return self.inner.fetch(file_id)
+
+        def store_signed(self, file_id, pdf):
+            return self.inner.store_signed(file_id, pdf)
+
+    (tmp_path / f"{FILE_ID}.pdf").write_bytes(fields_pdf.read_bytes())
+    key, cert = dev_cert
+    app = create_app(
+        document_store=NoListing(LocalDocumentStore(tmp_path)),
+        signer_directory=SignerDirectory({"kumiaicho@example.test": "組合長"}),
+        identity_provider=FakeIdentityProvider("kumiaicho@example.test"),
+        signer=load_signer(key, cert),
+        qr_secret=SECRET,
+        tsa_url=None,
+    )
+    body = TestClient(app).get("/").text
+    assert "QR から署名してください" in body

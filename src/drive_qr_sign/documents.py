@@ -7,12 +7,22 @@ Drive 実装はまだ無い。ここを Protocol にしてあるのは、
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 
 class DocumentNotFound(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class SharedDocument:
+    """一覧に並べる1件。中身は落とさず、名前とハッシュだけを持つ。"""
+
+    file_id: str
+    name: str
+    content_hash: str | None = None
 
 
 class DocumentStore(Protocol):
@@ -30,6 +40,13 @@ class DocumentStore(Protocol):
 
     def web_url(self, file_id: str) -> str | None:
         """人がその書類を開くための URL。省略可（無ければアプリが PDF を配る）。"""
+
+    def shared_with(self, email: str) -> list[SharedDocument]:
+        """その人が見られる PDF の一覧。省略可（無ければ一覧画面は使えない）。
+
+        ⚠ここが「一覧に出してよいか」の判定そのもの。返したものは、その人に
+        見せてよい書類として扱われる。
+        """
 
 
 class LocalDocumentStore:
@@ -65,6 +82,20 @@ class LocalDocumentStore:
         out = self.root / f"{file_id}.signed.pdf"
         out.write_bytes(data)
         return out.name
+
+    def shared_with(self, email: str) -> list[SharedDocument]:
+        """置いてある書類を全部返す。
+
+        ローカルには共有設定が無いので、誰に対しても全件になる。開発用サーバでは
+        名簿に載っている人だけがログインできる前提で、それで足りる。
+        """
+        found = []
+        for path in sorted(self.root.glob("*.pdf")):
+            if path.name.endswith(".signed.pdf"):
+                continue
+            file_id = path.stem
+            found.append(SharedDocument(file_id, path.name, self.content_hash(file_id)))
+        return found
 
     def content_hash(self, file_id: str) -> str | None:
         import hashlib

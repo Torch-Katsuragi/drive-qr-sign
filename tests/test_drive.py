@@ -31,6 +31,11 @@ class FakeFiles:
             return FakeRequest(None, error=RuntimeError("404"))
         return FakeRequest(self._drive.contents[fileId])
 
+    def list(self, **kwargs):
+        self._drive.list_calls.append(kwargs)
+        token = kwargs.get("pageToken")
+        return FakeRequest(self._drive.pages[int(token) if token else 0])
+
     def update(self, fileId: str, media_body=None, fields=None):
         self._drive.contents[fileId] = media_body.getbytes(0, media_body.size())
         self._drive.versions[fileId] = self._drive.versions.get(fileId, 1) + 1
@@ -60,6 +65,9 @@ class FakeDrive:
         self.contents = dict(contents)
         self.shares = dict(shares or {})
         self.versions: dict[str, int] = {}
+        # files.list の返し（ページごと）と、呼ばれたときの引数
+        self.pages: list[dict] = [{"files": []}]
+        self.list_calls: list[dict] = []
 
     def files(self):
         return FakeFiles(self)
@@ -153,3 +161,33 @@ def test_revoking_twice_is_harmless(store):
     document_store, _ = store
     assert document_store.revoke_own_access("doc-1", APP) is True
     assert document_store.revoke_own_access("doc-1", APP) is False
+
+
+def test_shared_with_asks_drive_for_that_persons_pdfs(store):
+    """一覧は Drive の検索に任せる。アプリは台帳を持たない。"""
+    document_store, drive = store
+    drive.pages = [
+        {"files": [{"id": "a", "name": "支出調書.pdf", "md5Checksum": "h1"}], "nextPageToken": "1"},
+        {"files": [{"id": "b", "name": "稟議書.pdf", "md5Checksum": "h2"}]},
+    ]
+
+    found = document_store.shared_with("Kumiaicho@Example.test")
+
+    assert [(d.file_id, d.name, d.content_hash) for d in found] == [
+        ("a", "支出調書.pdf", "h1"),
+        ("b", "稟議書.pdf", "h2"),
+    ]
+    query = drive.list_calls[0]["q"]
+    assert "mimeType='application/pdf'" in query
+    assert "trashed=false" in query
+    assert "'kumiaicho@example.test' in readers" in query
+    assert "'kumiaicho@example.test' in writers" in query
+    assert drive.list_calls[1]["pageToken"] == "1"
+
+
+def test_shared_with_cannot_be_used_to_widen_the_query(store):
+    """アドレスに引用符を混ぜて検索式を書き換えさせない。"""
+    document_store, drive = store
+    document_store.shared_with("x' or trashed=true or 'y@example.test")
+    query = drive.list_calls[0]["q"]
+    assert r"'x\' or trashed=true or \'y@example.test' in readers" in query

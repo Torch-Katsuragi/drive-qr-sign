@@ -1,6 +1,6 @@
-"""署名ページ。
+"""署名ページと、署名待ちの一覧。
 
-QR から来た人が見る唯一の画面。やることは3つしかない。
+QR から来た人が見るのは署名ページ。やることは3つしかない。
 
 1. QR の URL が本物か（HMAC）
 2. 押しているのが誰か（OpenID の検証済みメール）と、その人がこの書類を見られるか
@@ -9,6 +9,10 @@ QR から来た人が見る唯一の画面。やることは3つしかない。
 判定の出どころは2つに分かれている。**見られるか**は Drive の共有設定、
 **押印枠に押せるか**は名簿の役職。前者はアクセス制御、後者は決裁の割り当てで、
 守っているものが違うため一緒にしない。
+
+一覧（`/`）は QR を読む手間ごと省く入口。ログインした人に共有されている書類のうち、
+まだ押していないものを並べる。押すのは一覧から署名ページの POST を1件ずつ呼ぶだけで、
+署名の経路は QR から来たときと同じものを通る。
 
 Drive も身元確認も Protocol 越しに受け取るので、実装が差し替わってもこのファイルは変わらない。
 """
@@ -37,7 +41,7 @@ from .identity import (
 )
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .cache import TimedCache
-from .qr import InvalidPayload, verify_mac
+from .qr import InvalidPayload, make_mac, verify_mac
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
 from .signing import (
     list_signatures,
@@ -64,6 +68,9 @@ DOCUMENT_TTL = 600.0  # 書類の中身。使う前に必ず版番号で確か�
 VERIFIED_TTL = 10.0   # 版番号を確かめたばかり、とみなす時間（画面1枚ぶんの連続した要求をまとめる）
 ACCESS_TTL = 30.0     # Drive の共有設定
 PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わらない）
+# 一覧に出す判定（どの欄が空いているか）。中身のハッシュを鍵にするので、
+# 中身が変われば別の鍵になり、古い判定を見せることはない。長く持ってよい
+FIELDS_TTL = 6 * 3600.0
 
 # 印影の種類。画面の選択肢と `_seal_source` の分岐で同じ名前を使う
 SEAL_REGISTERED = "registered"  # 名簿に組織が指定した画像
@@ -111,6 +118,7 @@ def create_app(
     verified = TimedCache(VERIFIED_TTL)
     access = TimedCache(ACCESS_TTL)
     pictures = TimedCache(PICTURE_TTL)
+    fields_by_hash = TimedCache(FIELDS_TTL)
 
     # 「この人はこの書類を見てよいか」の判定。本番は Drive の共有設定に従う
     # （DriveDocumentStore.can_read）。渡されなければ名簿で代用する——
@@ -320,19 +328,78 @@ def create_app(
             return MODE_LOGIN, None, empty_fields
         if not _allowed(file_id, email):
             return MODE_STRANGER, None, empty_fields
+        mode, role = _mode_for(email, all_fields, empty_fields)
+        return mode, role, empty_fields
 
+    def _mode_for(email: str, all_fields: list[str], empty_fields: list[str]) -> tuple[str, str | None]:
+        """見てよい人について、押せるかどうか。署名ページと一覧で同じ判定を使う。"""
         role = signer_directory.role_for(email)
         if role in empty_fields:
-            return MODE_ROLE_READY, role, empty_fields
+            return MODE_ROLE_READY, role
         if role in all_fields:
-            return MODE_ROLE_DONE, role, empty_fields
+            return MODE_ROLE_DONE, role
 
         # 名簿に役職があっても、この書類にその押印枠が無いことはある
         # （Word など他の道具で作った書類、役職ごとに枠を置かない書類）。
         # ⚠その場合を「署名済み」と言ってはいけない。押す場所が無いだけで、
         # 確認の記録は残せる——押印枠を持たない人と同じ扱いにする
         already = silent_field_name(email) in all_fields
-        return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None, empty_fields
+        return (MODE_SILENT_DONE if already else MODE_SILENT_READY), None
+
+    def _fields_of(file_id: str, listed_hash: str | None) -> tuple[list[str], list[str]]:
+        """一覧に出すための、その書類の欄（全部・空き）。
+
+        ⚠一覧のたびに全件を落とすと、件数ぶん秒単位で待たせる。Drive の一覧は
+        中身のハッシュを追加の問い合わせ無しで返すので、**ハッシュが同じなら前の判定を使う**。
+        落とすのは中身が変わった書類だけになる。
+        """
+        if listed_hash:
+            known = fields_by_hash.get((file_id, listed_hash))
+            if known is not None:
+                return known
+
+        remembered = documents.get(file_id)
+        if remembered is not None and listed_hash and remembered[0] == listed_hash:
+            pdf = remembered[1]
+        else:
+            started = time.perf_counter()
+            pdf = document_store.fetch(file_id)
+            logger.info("一覧のため Drive から取得: %s (%.0fms)", file_id, (time.perf_counter() - started) * 1000)
+            # 開いて読むときにもう一度落とさずに済むよう、署名ページと同じ覚え書きに置く
+            documents.put(file_id, (_hash(pdf), pdf))
+
+        fields = (
+            list_signature_fields(io.BytesIO(pdf)),
+            list_signature_fields(io.BytesIO(pdf), filled=False),
+        )
+        return fields_by_hash.put((file_id, _hash(pdf)), fields)
+
+    def _waiting_for(email: str) -> list[dict]:
+        """その人がまだ押していない書類。一覧画面に並べるもの。"""
+        started = time.perf_counter()
+        waiting = []
+        for shared in document_store.shared_with(email):
+            # 一覧に出たこと自体が「見てよい」の根拠（shared_with の約束）。
+            # 1件ずつ共有設定を問い合わせ直さずに済むよう、ここで覚えておく
+            access.put((shared.file_id, email.strip().lower()), True)
+            try:
+                all_fields, empty_fields = _fields_of(shared.file_id, shared.content_hash)
+            except DocumentNotFound:
+                continue  # 一覧を取ったあとに消された・共有を外された
+            mode, role = _mode_for(email, all_fields, empty_fields)
+            if mode not in SIGNABLE:
+                continue
+            waiting.append(
+                {
+                    "file_id": shared.file_id,
+                    "name": shared.name,
+                    "mac": make_mac(qr_secret, shared.file_id),
+                    "role": role,
+                    "csrf": _csrf_token(qr_secret, shared.file_id, email),
+                }
+            )
+        logger.info("一覧: %s %d件 (%.0fms)", email, len(waiting), (time.perf_counter() - started) * 1000)
+        return waiting
 
     def _signed_by(pdf: bytes) -> list[dict]:
         """この書類に押されている署名の一覧。押印枠のものも、不可視のものも。
@@ -387,6 +454,22 @@ def create_app(
     @app.get("/status")
     def status() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", response_class=HTMLResponse)
+    def inbox(request: Request) -> HTMLResponse:
+        """署名待ちの一覧。QR を読まずに、まとめて押すための入口。"""
+        email = identity_provider.verified_email(request)
+        listing = getattr(document_store, "shared_with", None)
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="inbox.html",
+            context={
+                "email": email,
+                "can_log_in": login_routes is not None,
+                "can_list": listing is not None,
+                "waiting": _waiting_for(email) if email and listing is not None else [],
+            },
+        )
 
     @app.get("/s/{file_id}/document.pdf")
     def document_file(request: Request, file_id: str, m: str = "") -> Response:

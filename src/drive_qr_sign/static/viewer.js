@@ -8,24 +8,35 @@
 
 import * as pdfjs from "./pdfjs/pdf.min.mjs";
 
-let revision = 0;
-
-const container = document.getElementById("document");
-if (container) {
-  pdfjs.GlobalWorkerOptions.workerSrc = container.dataset.worker;
+// 署名ページの書類は開いた時点で描く
+const single = document.getElementById("document");
+if (single) {
+  const render = attachViewer(single);
   render();
   // 署名・取り消しの直後に、書類だけを描き直すための入口（static/sign.js から呼ぶ）
   window.reloadDocument = render;
 }
 
-function render() {
+/**
+ * container に書類を描く関数を返す。呼ぶたびに最新の版を取り直して描き直す。
+ *
+ * 一覧画面では書類ごとに1つずつ持つ。描くのは呼ばれたときだけなので、
+ * 開かれなかった書類は落としもしない。
+ */
+export function attachViewer(container) {
+  pdfjs.GlobalWorkerOptions.workerSrc = container.dataset.worker;
+  const state = { revision: 0, pdf: null, zoomWatched: false };
+  return () => render(container, state);
+}
+
+function render(container, state) {
   // 描き直しのあいだ背丈を保つ。空にした瞬間にページが縮むと、
   // ブラウザがスクロール位置を切り詰めて先頭へ飛ぶ
   const height = container.offsetHeight;
   if (height) container.style.minHeight = `${height}px`;
   container.replaceChildren();
-  revision += 1;
-  show(container)
+  state.revision += 1;
+  show(container, state)
     .then(() => {
       container.style.minHeight = "";
     })
@@ -39,10 +50,10 @@ function render() {
     });
 }
 
-async function show(container) {
+async function show(container, state) {
   const pdf = await pdfjs.getDocument({
     // 押したあとの版を確実に取りに行く（同じ URL のままだと古い版が出る余地がある）
-    url: revision > 1 ? `${container.dataset.src}&r=${revision}` : container.dataset.src,
+    url: state.revision > 1 ? `${container.dataset.src}&r=${state.revision}` : container.dataset.src,
     withCredentials: true, // セッションのクッキーを付ける
   }).promise;
 
@@ -61,8 +72,11 @@ async function show(container) {
     { rootMargin: "600px" }
   );
 
-  currentPdf = pdf;
-  watchZoom(container);
+  state.pdf = pdf;
+  if (!state.zoomWatched) {
+    state.zoomWatched = true;
+    watchZoom(container, state);
+  }
 
   const first = await pdf.getPage(1);
   const ratio = first.getViewport({ scale: 1 }).height / first.getViewport({ scale: 1 }).width;
@@ -92,7 +106,7 @@ function sharpness() {
 }
 
 /** ピンチで拡大されたら、その倍率で描き直す（引き伸ばした画像のままにしない）。 */
-function watchZoom(container) {
+function watchZoom(container, state) {
   if (!window.visualViewport) return;
   let drawnAt = sharpness();
   let pending = null;
@@ -106,21 +120,20 @@ function watchZoom(container) {
       container.querySelectorAll(".page").forEach((page) => {
         page.dataset.redraw = "1";
       });
-      redrawVisible(container, wanted);
+      redrawVisible(container, state.pdf, wanted);
     }, 250);
   });
 }
 
-let currentPdf = null;
-
 /** いま見えているページだけ、指定の細かさで描き直す。 */
-function redrawVisible(container, wanted) {
-  if (!currentPdf) return;
+function redrawVisible(container, pdf, wanted) {
+  // 畳まれている書類は幅が0。描くと大きさ0の canvas ができるだけなので飛ばす
+  if (!pdf || !container.clientWidth) return;
   const view = { top: -200, bottom: window.innerHeight + 200 };
   container.querySelectorAll(".page").forEach((element) => {
     const box = element.getBoundingClientRect();
     if (box.bottom < view.top || box.top > view.bottom) return;
-    drawPage(currentPdf, element, container.clientWidth, wanted);
+    drawPage(pdf, element, container.clientWidth, wanted);
   });
 }
 

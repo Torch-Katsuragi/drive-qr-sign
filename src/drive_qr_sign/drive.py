@@ -19,7 +19,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from .documents import DocumentNotFound
+from .documents import DocumentNotFound, SharedDocument
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 PDF_MIME = "application/pdf"
@@ -136,6 +136,43 @@ class DriveDocumentStore:
                 ).execute()
                 return True
         return False
+
+    def shared_with(self, email: str) -> list[SharedDocument]:
+        """その人に共有されていて、アプリからも見える PDF の一覧。
+
+        アプリに見えるのは回覧中の書類だけ（回覧を終えたら共有を外す）なので、
+        これがそのまま「その人の回覧中の書類」になる。専用の台帳は要らない。
+
+        ⚠グループ宛ての共有は拾えない（Drive の検索がグループの中身を展開しない）。
+        「リンクを知っている全員」への共有も、その人宛てではないので出ない。
+        """
+        # 検索式の文字列リテラルに入れるので、引用符とバックスラッシュを逃がす
+        who = email.strip().lower().replace("\\", "\\\\").replace("'", "\\'")
+        query = (
+            f"mimeType='{PDF_MIME}' and trashed=false and "
+            f"('{who}' in readers or '{who}' in writers or '{who}' in owners)"
+        )
+        found: list[SharedDocument] = []
+        page_token = None
+        while True:
+            response = (
+                self._service.files()
+                .list(
+                    q=query,
+                    fields="nextPageToken, files(id, name, md5Checksum)",
+                    orderBy="modifiedTime desc",
+                    pageSize=100,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                found.append(SharedDocument(item["id"], item.get("name") or item["id"], item.get("md5Checksum")))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return found
 
     def can_read(self, file_id: str, email: str) -> bool:
         """その人が Drive 上でこの書類を見られるか。

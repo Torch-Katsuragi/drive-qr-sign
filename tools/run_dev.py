@@ -9,6 +9,8 @@
 本人確認は2通りで、`secrets/oauth-client.json`（Google Cloud コンソールの
 「JSON をダウンロード」で落ちるファイル）があれば本物の Google ログインになり、
 無ければ `?as=<メールアドレス>` で名乗れる偽の身元確認になる。
+`DEV_FAKE_LOGIN=1` を付けると、クライアントがあっても偽のほうを使う
+（本物の Drive のまま、アカウントを切り替えながら画面を確かめるとき）。
 偽のほうを package の外（tools/）に置いてあるのは、
 偽の認証がライブラリ側に紛れ込まないようにするため。
 
@@ -142,8 +144,8 @@ def prepare() -> None:
 
 def build_identity_provider():
     """本物の Google ログインが使えるならそちら、無ければ偽の身元確認。"""
-    if not CLIENT_SECRETS.exists():
-        print(f"! {CLIENT_SECRETS} が無いので ?as= で名乗る開発用ログインを使う")
+    if os.environ.get("DEV_FAKE_LOGIN") == "1" or not CLIENT_SECRETS.exists():
+        print("! ?as= で名乗る開発用ログインを使う")
         return DevIdentityProvider(), True
 
     print(f"Google ログインを使う（{CLIENT_SECRETS.name}）")
@@ -182,6 +184,9 @@ def build_notifier():
 
     本番と同じく、送信専用サービス（Resend）の鍵があればそちらを使う。
     """
+    if os.environ.get("DEV_NO_NOTICE") == "1":
+        print("! DEV_NO_NOTICE=1 なので署名の記録メールは送らない")
+        return None
     if RESEND_KEY.exists():
         from drive_qr_sign.notify import ResendNotifier
 
@@ -215,6 +220,7 @@ def main() -> None:
         app.middleware("http")(remember_dev_identity)
 
     url = sign_url(PUBLIC_ORIGIN, DEV_QR_SECRET, file_id)
+    print(f"署名待ちの一覧: {PUBLIC_ORIGIN}/" + ("?as=<メールアドレス>" if is_fake else ""))
     print("QR に焼く URL（開発用）:")
     if is_fake:
         for email, entry in signers.items():

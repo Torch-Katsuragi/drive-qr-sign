@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="head">
+  <div>
+    <h1>署名待ちの書類</h1>
+    <p class="doc">あなたに共有されていて、まだ署名していない書類</p>
+  </div>
+
+  {% if email %}
+    <details class="account">
+      <summary title="署名するアカウント"><img src="/account/icon.png" alt="{{ email }}"></summary>
+      <div class="menu">
+        <p class="who">{{ email }} として署名します</p>
+        {% if can_log_in %}
+          <a href="/login?next=/">別のアカウントに切り替える</a>
+          <a href="/logout">ログアウト</a>
+        {% else %}
+          <p class="note">この開発用サーバでは切り替えられません。</p>
+        {% endif %}
+      </div>
+    </details>
+  {% endif %}
+</header>
+
+{% if not email %}
+  <p class="who">未ログイン</p>
+  <p>Google アカウントでログインすると、あなた宛ての署名待ちの書類がまとめて表示されます。</p>
+  <p class="note">求める権限はメールアドレスの確認だけです。Drive へのアクセス権は要求しません。</p>
+  {% if can_log_in %}
+    <form method="get" action="/login">
+      <input type="hidden" name="next" value="/">
+      <button type="submit">Google でログイン</button>
+    </form>
+  {% endif %}
+
+{% elif not can_list %}
+  <p>この環境では一覧を出せません。書類の QR から署名してください。</p>
+
+{% elif not waiting %}
+  <p class="who">{{ email }}</p>
+  <p>署名待ちの書類はありません。</p>
+
+{% else %}
+  <p class="who">{{ email }}</p>
+  {#
+    行はチェックボックスと書類名に分けてある。名前を押すと中身が開き、
+    PDF はそのとき初めて読み込む（開かない書類は落とさない）。
+    押すのは署名ページと同じ POST を1件ずつ呼ぶだけで、署名の経路は QR から来たときと同じ。
+  #}
+  <form id="batch" class="batch">
+    <label class="select-all"><input type="checkbox" id="select-all"> すべて選択</label>
+
+    <ul class="inbox">
+      {% for item in waiting %}
+        <li class="item"
+            data-action="/s/{{ item.file_id }}/sign?m={{ item.mac }}"
+            data-csrf="{{ item.csrf }}">
+          <input type="checkbox" class="pick" aria-label="{{ item.name }} を選ぶ">
+          <details>
+            <summary>
+              <span class="name">{{ item.name }}</span>
+              <span class="tag">{% if item.role %}{{ item.role }}欄{% else %}確認の記録{% endif %}</span>
+              <span class="state" aria-live="polite"></span>
+            </summary>
+            <p class="note"><a href="/s/{{ item.file_id }}?m={{ item.mac }}">この書類の署名ページを開く</a></p>
+            <div class="viewer"
+                 data-src="/s/{{ item.file_id }}/document.pdf?m={{ item.mac }}"
+                 data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
+          </details>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <div class="action">
+      {% if waiting | selectattr("role") | list %}
+        <img class="seal" src="/seal/preview.png" alt="押される印影">
+        <p class="note">押印枠にはこの印影が入ります。変えたいときは各書類の署名ページから押してください。</p>
+      {% endif %}
+      <button type="submit" id="batch-sign" disabled>選んだ書類に署名する</button>
+      <p class="note" id="batch-fallback" hidden>
+        この端末ではまとめて署名できません。各書類の「署名ページを開く」から押してください。
+      </p>
+    </div>
+  </form>
+
+  {# ⚠module ではない素のスクリプトで見張る。module ごと動かない端末では、ボタンが押せないまま黙る #}
+  <script>
+    setTimeout(function () {
+      if (document.getElementById("batch-sign").dataset.ready) return;
+      document.getElementById("batch-fallback").hidden = false;
+    }, 8000);
+  </script>
+  <script type="module" src="/static/inbox.js"></script>
+{% endif %}
+{% endblock %}

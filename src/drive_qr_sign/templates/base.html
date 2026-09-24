@@ -207,6 +207,32 @@
   .textLayer ::selection { background: rgba(0, 100, 255, .3); }
   form { width: 100%; display: grid; gap: .75rem; }
 
+  /* 署名待ちの一覧。チェックボックスは行の左に浮かせ、書類名を押すと中身が開く。
+     開いた書類はカードの余白を打ち消して横いっぱいに出す（署名ページと同じ） */
+  .batch { gap: 1rem; }
+  .select-all { font-size: .9rem; color: var(--muted); display: flex; gap: .5rem; align-items: center; }
+  .inbox { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  .item { position: relative; border-bottom: 1px solid var(--line); }
+  .item > .pick, .select-all input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--seal); }
+  .item > .pick { position: absolute; left: 0; top: 1rem; }
+  .item summary {
+    display: flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: baseline;
+    padding: .85rem 0 .85rem 2.25rem; cursor: pointer; list-style: none;
+  }
+  .item summary::-webkit-details-marker { display: none; }
+  .item summary::before { content: "▸"; color: var(--muted); margin-left: -1rem; width: .75rem; }
+  .item details[open] summary::before { content: "▾"; }
+  .item .name { flex: 1 1 12rem; font-weight: 600; }
+  .item .tag, .item .state { font-size: .8rem; color: var(--muted); }
+  .item .state:empty { display: none; }
+  .item.busy .state { color: var(--accent); }
+  .item.done .state { color: var(--seal); font-weight: 600; }
+  .item.done .name { color: var(--muted); }
+  .item.failed .state { color: var(--seal); }
+  .item details > .note { margin: 0 0 .5rem 2.25rem; }
+  .item .viewer { margin: 0 calc(-1 * var(--pad)) 1rem; }
+  .batch .action { margin-top: .5rem; }
+
 </style>
 </head>
 <body>
