@@ -17,6 +17,9 @@
     RESEND_API_KEY     署名の記録メールを送る鍵（Resend）。あるとこちらが優先される
     NOTICE_SENDER      その差出人（例: 〇〇工房 <no-reply@example.com>）
     GMAIL_SENDER_JSON  Gmail から送る場合の資格情報。無ければ送らない
+    TASKS_QUEUE        署名を後ろへ回す Cloud Tasks のキュー
+                       （projects/<p>/locations/<l>/queues/<q>）。無ければその場で署名する
+    TASKS_INVOKER      キューが呼び返すときに名乗るサービスアカウント（TASKS_QUEUE と組）
 
 Drive は Cloud Run に紐づいたサービスアカウントで触るので、鍵ファイルは持たない。
 
@@ -37,6 +40,7 @@ from .identity import SignerDirectory, SignerEntry
 from .notify import GmailNotifier, ResendNotifier, build_gmail_service_from_info
 from .kms import load_kms_signer
 from .signing import FREE_TSA_URL, load_signer_from_pem
+from .tasks import TASK_PATH, CloudTasksQueue, verify_task_token
 from .web import create_app
 
 
@@ -114,12 +118,30 @@ def _signer():
     )
 
 
+def _sign_queue():
+    """署名を後ろへ回すキュー。設定が無ければ (None, None) で、その場で署名する。
+
+    戻り値の2つ目は、呼び返してきたのがこのキューかを確かめる関数。
+    """
+    queue_path = os.environ.get("TASKS_QUEUE")
+    if not queue_path:
+        return None, None
+    target = f"{_required('PUBLIC_ORIGIN').rstrip('/')}{TASK_PATH}"
+    invoker = _required("TASKS_INVOKER")
+    logging.getLogger(__name__).info("署名は Cloud Tasks から押す: %s", queue_path)
+    return (
+        CloudTasksQueue(queue_path, target, invoker),
+        lambda request: verify_task_token(request.headers.get("authorization"), target, invoker),
+    )
+
+
 def build() -> "object":
     _configure_logging()
     # 起動したことを1行残す。押すのが遅かったとき、コンテナの起動待ちだったのか
     # 中の処理が重かったのかを、ログの並びだけで見分けられるようにする
     logging.getLogger(__name__).info("起動")
-    store = DriveDocumentStore(build_default_service())
+    store = DriveDocumentStore(factory=build_default_service)
+    sign_queue, task_auth = _sign_queue()
     return create_app(
         document_store=store,
         signer_directory=_signer_directory(),
@@ -129,6 +151,8 @@ def build() -> "object":
         tsa_url=os.environ.get("TSA_URL", FREE_TSA_URL),
         can_read=store.can_read,
         notifier=_notifier(),
+        sign_queue=sign_queue,
+        task_auth=task_auth,
     )
 
 

@@ -34,6 +34,7 @@ from drive_qr_sign.identity import SignerDirectory, SignerEntry
 from drive_qr_sign.notify import GmailNotifier, build_gmail_service
 from drive_qr_sign.qr import sign_url
 from drive_qr_sign.signing import load_signer
+from drive_qr_sign.tasks import ThreadQueue
 from drive_qr_sign.web import create_app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -174,7 +175,7 @@ def build_document_store():
         return LocalDocumentStore(STORE_DIR), FILE_ID, None
 
     file_id = json.loads(DRIVE_CONFIG.read_text(encoding="utf-8"))["file_id"]
-    store = DriveDocumentStore(build_service(SERVICE_ACCOUNT))
+    store = DriveDocumentStore(factory=lambda: build_service(SERVICE_ACCOUNT))
     print(f"Drive を使う（{SERVICE_ACCOUNT.name} / file_id={file_id}）")
     return store, file_id, store.can_read
 
@@ -215,6 +216,8 @@ def main() -> None:
         tsa_url=None,  # 開発中は TSA に出ない。本番は freeTSA か認定TSA
         can_read=can_read,
         notifier=build_notifier(),
+        # 本番（Cloud Tasks）と同じく、押したら受け付けだけ返して署名は後ろで回す
+        sign_queue=ThreadQueue(),
     )
     if is_fake:
         app.middleware("http")(remember_dev_identity)

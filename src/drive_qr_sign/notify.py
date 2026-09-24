@@ -50,6 +50,9 @@ class SignatureNotice:
     digest: str  # そのときの PDF の SHA-256（16進）
     signed_at: datetime
     revoked: bool = False  # 押した記録ではなく、取り消した記録
+    # 受け付けたのに最後まで押せなかったときの理由。押すのを後ろへ回したので、
+    # 押せなかったことは画面ではなくここで知らせる（tasks.py）
+    failure: str | None = None
 
     @staticmethod
     def create(
@@ -69,6 +72,17 @@ class SignatureNotice:
             revoked=revoked,
         )
 
+    @staticmethod
+    def failed(*, file_id: str, signer_email: str, role: str | None, reason: str):
+        return SignatureNotice(
+            file_id=file_id,
+            signer_email=signer_email,
+            role=role,
+            digest="",
+            signed_at=datetime.now(timezone.utc),
+            failure=reason,
+        )
+
     @property
     def drive_url(self) -> str:
         return f"https://drive.google.com/file/d/{self.file_id}/view"
@@ -77,6 +91,8 @@ class SignatureNotice:
 def render_notice(notice: SignatureNotice) -> tuple[str, str]:
     """件名と本文。機械で突き合わせられるよう、値は1行1項目で書く。"""
     what = f"{notice.role} 欄に押印" if notice.role else "確認の記録（紙面には出ない署名）"
+    if notice.failure:
+        return render_failure(notice, what)
     if notice.revoked:
         subject = f"[署名の取り消し] {notice.file_id}"
         headline = "下記の書類で、あなたのアカウントの署名が取り消されました。"
@@ -100,6 +116,25 @@ def render_notice(notice: SignatureNotice) -> tuple[str, str]:
 後から第三者に示せます。手元の PDF のハッシュと突き合わせて確認できます。
 
 心当たりが無い場合は、書類の管理者に連絡してください。
+"""
+    return subject, body
+
+
+def render_failure(notice: SignatureNotice, what: str) -> tuple[str, str]:
+    """受け付けた署名を、最後まで押せなかったときの知らせ。"""
+    subject = f"[署名できませんでした] {notice.file_id}"
+    body = f"""{notice.signer_email} 様
+
+下記の書類への署名を受け付けましたが、署名できませんでした。
+書類はまだ署名されていません。お手数ですが、もう一度押してください。
+
+  内容          : {what}
+  書類          : {notice.drive_url}
+  ファイル ID   : {notice.file_id}
+  理由          : {notice.failure}
+  時刻(UTC)     : {notice.signed_at.isoformat(timespec="seconds")}
+
+続けて失敗する場合は、書類の管理者に連絡してください。
 """
     return subject, body
 

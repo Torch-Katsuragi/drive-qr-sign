@@ -1,9 +1,11 @@
-// 署名待ちの一覧。選んだ書類を1件ずつ署名する。
+// 署名待ちの一覧。選んだ書類をまとめて署名する。
 //
-// 押すのは署名ページと同じ POST（/s/<id>/sign）。まとめて1回で送る口は作らない。
-// 1件あたり数秒かかる（署名＋タイムスタンプ＋書き戻し）ので、1回にまとめると
-// 何十秒も無言で待たせることになる。1件ずつなら、終わった行から順に印が付く。
-// 途中で1件失敗しても、残りはそのまま進める。
+// 押した瞬間に「署名済み」にする。サーバがやるのは受け付けまでで（本人と欄の確認だけ）、
+// PDF への署名と書き戻しはサーバ側のキューが後で行う（tasks.py）。受け付けを断られた行だけ、
+// 表示を戻して理由を出す。
+//
+// ⚠送るのは keepalive 付き。押してすぐ画面を閉じても、受け付けの要求は届く。
+// 押すのは署名ページと同じ POST（/s/<id>/sign）で、QR から来たときと同じ判定を通る。
 
 import { attachViewer } from "./viewer.js";
 
@@ -14,15 +16,13 @@ const items = () => [...form.querySelectorAll(".item")];
 const pending = () => items().filter((item) => !item.classList.contains("done"));
 const picked = () => pending().filter((item) => item.querySelector(".pick").checked);
 
-let running = false;
-
 function refresh() {
   const count = picked().length;
-  button.disabled = running || count === 0;
-  if (!running) button.textContent = count ? `選んだ${count}件に署名する` : "選んだ書類に署名する";
+  button.disabled = count === 0;
+  button.textContent = count ? `選んだ${count}件に署名する` : "選んだ書類に署名する";
   const rest = pending();
   selectAll.checked = rest.length > 0 && count === rest.length;
-  selectAll.disabled = running || rest.length === 0;
+  selectAll.disabled = rest.length === 0;
 }
 
 // 開いたときに初めて PDF を読む。開かれなかった書類は落とさない
@@ -50,60 +50,48 @@ form.addEventListener("change", (event) => {
   refresh();
 });
 
-form.addEventListener("submit", async (event) => {
+form.addEventListener("submit", (event) => {
   event.preventDefault();
   const queue = picked();
   if (!queue.length) return;
 
-  running = true;
-  form.querySelectorAll(".pick").forEach((box) => (box.disabled = true));
-  let done = 0;
-  let failed = 0;
+  // 先に見た目を済ませる。待たせるのは、押した人ではなくサーバのキュー
+  for (const item of queue) {
+    settle(item, "done", "署名済み");
+    item.querySelector("details").open = false;
+  }
+  refresh();
 
   for (const item of queue) {
-    button.textContent = `署名中… ${done + failed + 1} / ${queue.length}`;
-    const state = item.querySelector(".state");
-    state.textContent = "署名中…";
-    item.classList.add("busy");
-    try {
-      const body = new FormData();
-      body.append("csrf", item.dataset.csrf);
-      const response = await fetch(item.dataset.action, {
-        method: "POST",
-        body,
-        credentials: "same-origin",
-        headers: { "X-Requested-With": "fetch" },
+    const body = new FormData();
+    body.append("csrf", item.dataset.csrf);
+    fetch(item.dataset.action, {
+      method: "POST",
+      body,
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "X-Requested-With": "inbox" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await reason(response));
+      })
+      .catch((error) => {
+        console.error(error);
+        settle(item, "failed", error.message || "受け付けられませんでした");
+        refresh();
       });
-      if (!response.ok) throw new Error(await reason(response));
-      item.classList.add("done");
-      item.querySelector(".pick").checked = false;
-      state.textContent = "署名済み";
-      done += 1;
-      // 開いている書類は、押したあとの版で描き直す
-      const box = item.querySelector(".viewer");
-      if (viewers.has(box) && item.querySelector("details").open) viewers.get(box)();
-    } catch (error) {
-      console.error(error);
-      item.classList.add("failed");
-      state.textContent = error.message || "失敗しました";
-      failed += 1;
-    } finally {
-      item.classList.remove("busy");
-    }
-  }
-
-  running = false;
-  items().forEach((item) => {
-    item.querySelector(".pick").disabled = item.classList.contains("done");
-  });
-  refresh();
-  if (failed) {
-    button.insertAdjacentHTML(
-      "afterend",
-      `<p class="note">${done}件署名し、${failed}件はできませんでした。理由は各行に出ています。</p>`
-    );
   }
 });
+
+/** 行の状態を切り替える。done の行は選べなくなり、failed の行はもう一度選べる。 */
+function settle(item, state, label) {
+  item.classList.remove("done", "failed");
+  item.classList.add(state);
+  item.querySelector(".state").textContent = label;
+  const box = item.querySelector(".pick");
+  box.checked = false;
+  box.disabled = state === "done";
+}
 
 /** 断られた理由。サーバが日本語で返すので、そのまま見せる。 */
 async function reason(response) {

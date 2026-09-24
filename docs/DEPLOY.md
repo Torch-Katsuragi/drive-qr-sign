@@ -217,6 +217,38 @@ DMARC は `_dmarc.<From のドメイン>` を先に引き、無ければ組織�
 
 `p=none`（監視のみ）で足りる。DKIM の署名ドメインが From と揃っていれば DMARC は pass する。
 
+## 7.5 押したらすぐ返す（任意・勧める）
+
+何もしなければ、署名ボタンを押してから署名・タイムスタンプ・書き戻しが終わるまで
+（5秒前後、一覧からまとめて押せば件数ぶん）画面が待つ。Cloud Tasks のキューを置くと、
+押した瞬間に受け付けだけ返し、署名は後ろで1件ずつ行う。画面を閉じても最後まで押される。
+押せなかったときは本人へメールで知らせる（7. の記録メールが要る）。
+
+費用は Cloud Tasks の無料枠（月100万回）に収まる。
+
+```powershell
+gcloud services enable cloudtasks.googleapis.com --project <プロジェクト>
+
+# ⚠同時実行は1にする。署名どうしが重ならないようにするため。
+# やり直しの回数（5）はアプリ側の MAX_ATTEMPTS と揃える
+gcloud tasks queues create drive-qr-sign --location <リージョン> --project <プロジェクト> `
+  --max-concurrent-dispatches=1 --max-attempts=5 --min-backoff=5s --max-backoff=60s
+
+$sa = "drive-qr-sign@<プロジェクト>.iam.gserviceaccount.com"
+# 予約を積む権限と、呼び返すときに自分の名前でトークンを付ける権限
+gcloud tasks queues add-iam-policy-binding drive-qr-sign --location <リージョン> --project <プロジェクト> `
+  --member "serviceAccount:$sa" --role roles/cloudtasks.enqueuer
+gcloud iam service-accounts add-iam-policy-binding $sa --project <プロジェクト> `
+  --member "serviceAccount:$sa" --role roles/iam.serviceAccountUser
+
+# ⚠--set-env-vars ではなく --update-env-vars。set は今ある環境変数を全部置き換える
+gcloud run services update drive-qr-sign --region <リージョン> --project <プロジェクト> `
+  --update-env-vars "TASKS_QUEUE=projects/<プロジェクト>/locations/<リージョン>/queues/drive-qr-sign,TASKS_INVOKER=$sa"
+```
+
+キューが呼び返すのは `PUBLIC_ORIGIN` + `/tasks/sign`。呼び返しに付く OIDC トークンを
+アプリが確かめるので、`--allow-unauthenticated` のままでよい。
+
 ## 8. 認証の記録を残す（任意・強く勧める）
 
 ⚠**署名を捏造できるのはアプリの管理者**である（→ README「現状」）。その対抗になるのは

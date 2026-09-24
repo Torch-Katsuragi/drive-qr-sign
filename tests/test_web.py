@@ -813,7 +813,7 @@ def test_the_generated_seal_is_the_default_even_with_an_icon(
 def test_a_signature_that_lands_mid_flight_is_not_overwritten(
     fields_pdf: Path, dev_cert, tmp_path: Path
 ):
-    """署名しているあいだに別の人が押していたら、その版で上書きしない。
+    """署名しているあいだに別の人が押していたら、その版で上書きせず、取り直して押し直す。
 
     Drive には「この版のときだけ書き換える」条件付き更新が無いので、
     書き戻す直前にもう一度版を確かめる。⚠隙間が完全に消えるわけではない
@@ -865,10 +865,10 @@ def test_a_signature_that_lands_mid_flight_is_not_overwritten(
 
     response = client.post(f"/s/{FILE_ID}/sign?m={make_mac(SECRET, FILE_ID)}", data={"csrf": csrf})
 
-    assert response.status_code == 409
-    assert "もう一度押してください" in response.text
-    # 割り込んだ側の署名は残っている（消されていない）
-    assert list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True) == ["担当"]
+    # 重なったら、割り込んだ版を取り直してその上に押し直す（押した人にやり直させない）
+    assert response.status_code == 200
+    # 割り込んだ側の署名は残っていて（消されていない）、自分の署名も入っている
+    assert sorted(list_signature_fields(store_dir / f"{FILE_ID}.signed.pdf", filled=True)) == ["担当", "組合長"]
 
 
 def test_a_document_without_your_seal_box_is_not_called_signed(sample_pdf: Path, dev_cert, tmp_path: Path):

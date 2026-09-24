@@ -191,3 +191,29 @@ def test_shared_with_cannot_be_used_to_widen_the_query(store):
     document_store.shared_with("x' or trashed=true or 'y@example.test")
     query = drive.list_calls[0]["q"]
     assert r"'x\' or trashed=true or \'y@example.test' in readers" in query
+
+
+def test_each_thread_gets_its_own_client():
+    """googleapiclient はスレッドをまたいで共有できない。スレッドごとに作る。
+
+    共有すると、同時に来た要求どうしで読み取りが混ざってタイムアウトする
+    （実測: 6本同時に落とすと2本がタイムアウト。一覧からまとめて押すと起きる）。
+    """
+    import threading
+
+    made = []
+
+    def factory():
+        drive = FakeDrive(contents={"doc-1": b"%PDF"})
+        made.append(drive)
+        return drive
+
+    store = DriveDocumentStore(factory=factory)
+    store.fetch("doc-1")
+    store.fetch("doc-1")
+    assert len(made) == 1  # 同じスレッドでは使い回す
+
+    worker = threading.Thread(target=store.fetch, args=("doc-1",))
+    worker.start()
+    worker.join()
+    assert len(made) == 2  # 別のスレッドでは別のものを作る

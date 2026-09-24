@@ -10,6 +10,10 @@ QR から来た人が見るのは署名ページ。やることは3つしかな�
 **押印枠に押せるか**は名簿の役職。前者はアクセス制御、後者は決裁の割り当てで、
 守っているものが違うため一緒にしない。
 
+押すのは「受け付け」と「実行」に分かれている（tasks.py）。POST が返すまでにやるのは
+本人と欄の確認だけで、署名・タイムスタンプ・書き戻しはキュー（Cloud Tasks）から
+`/tasks/sign` として呼び返されたときに行う。キューが無ければその場で行う。
+
 一覧（`/`）は QR を読む手間ごと省く入口。ログインした人に共有されている書類のうち、
 まだ押していないものを並べる。押すのは一覧から署名ページの POST を1件ずつ呼ぶだけで、
 署名の経路は QR から来たときと同じものを通る。
@@ -21,14 +25,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+from datetime import datetime, timedelta, timezone
 import threading
 import io
 import time
 import logging
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -42,6 +48,7 @@ from .identity import (
 from .notify import Notifier, SignatureNotice, notify_quietly
 from .cache import TimedCache
 from .qr import InvalidPayload, make_mac, verify_mac
+from .tasks import MAX_ATTEMPTS, TASK_PATH, SignJob, SignQueue
 from .seal import MAX_UPLOAD_BYTES, UnusableImage, compose_stamp, prepare_uploaded, render_seal
 from .signing import (
     list_signatures,
@@ -71,6 +78,12 @@ PICTURE_TTL = 600.0   # Google アカウントのアイコン（そう変わら�
 # 一覧に出す判定（どの欄が空いているか）。中身のハッシュを鍵にするので、
 # 中身が変われば別の鍵になり、古い判定を見せることはない。長く持ってよい
 FIELDS_TTL = 6 * 3600.0
+# 受け付けたがまだ押していない署名。押し終えれば消すので、これは
+# 「キューが止まったまま」になったときに、いつまでも受付済みと言い続けないための上限
+PENDING_TTL = 15 * 60.0
+# 書き戻す直前に他の人の署名と重なったとき、取り直して押し直す回数
+CONFLICT_RETRIES = 3
+JST = timezone(timedelta(hours=9))
 
 # 印影の種類。画面の選択肢と `_seal_source` の分岐で同じ名前を使う
 SEAL_REGISTERED = "registered"  # 名簿に組織が指定した画像
@@ -83,6 +96,7 @@ MODE_ROLE_READY = "role_ready"  # 押印枠が空いている
 MODE_ROLE_DONE = "role_done"  # 自分の枠は署名済み
 MODE_SILENT_READY = "silent_ready"  # 枠は無い。不可視署名を付けられる
 MODE_SILENT_DONE = "silent_done"  # 不可視署名は記録済み
+MODE_PENDING = "pending"  # 押したのは受け付けた。PDF にはまだ入っていない
 
 SIGNABLE = {MODE_ROLE_READY, MODE_SILENT_READY}
 
@@ -97,6 +111,19 @@ def _csrf_token(secret: bytes, file_id: str, email: str) -> str:
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
+class JobRejected(Exception):
+    """やり直しても押せない（共有を外された、欄が無くなった等）。"""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+class _Conflict(Exception):
+    """書き戻す直前に、土台にした中身が入れ替わっていた。"""
+
+
 def create_app(
     *,
     document_store: DocumentStore,
@@ -107,6 +134,8 @@ def create_app(
     tsa_url: str | None = FREE_TSA_URL,
     can_read=None,
     notifier: Notifier | None = None,
+    sign_queue: SignQueue | None = None,
+    task_auth=None,
 ) -> FastAPI:
     app = FastAPI(title="drive-qr-sign")
 
@@ -119,6 +148,10 @@ def create_app(
     access = TimedCache(ACCESS_TTL)
     pictures = TimedCache(PICTURE_TTL)
     fields_by_hash = TimedCache(FIELDS_TTL)
+    # 受け付けてまだ押していない (file_id, email)。画面で「受付済み」と出すのに使う。
+    # ⚠`--max-instances=1` なのでプロセスの中に持てば足りる。消えても、あとから来た
+    # 予約が「もう押してある」を見て何もせず終わるだけ
+    pending = TimedCache(PENDING_TTL)
 
     # 「この人はこの書類を見てよいか」の判定。本番は Drive の共有設定に従う
     # （DriveDocumentStore.can_read）。渡されなければ名簿で代用する——
@@ -225,9 +258,10 @@ def create_app(
         実測（本番・2026-08-18）:
             書類の用意=1737ms 署名（TSA込み）=1685ms 書き戻し=2073ms 合計=5495ms
 
-        書き戻しを画面の後ろに回せば2秒縮むが、そうすると「押せたように見えて
-        Drive には無い」状態が作れてしまい、直列化と失敗の通知が要る。
-        2秒のために壊れ方を複雑にしない、と判断して同期のままにしている（松本判断）。
+        いまはこの全部をキュー（Cloud Tasks）の後ろへ回し、押した人は待たせない（tasks.py）。
+        当初は「押せたように見えて Drive には無い」状態を嫌って同期にしていたが、
+        テンポを優先して方針を変えた（2026-09-24）。直列化はキューの同時実行1で、
+        失敗は本人へのメールで受ける。
         """
         parts = [
             f"{label}={(at - before) * 1000:.0f}ms"
@@ -273,10 +307,7 @@ def create_app(
         """
         stored = _stored_hash(file_id)
         if stored is not None and stored != base_hash:
-            raise HTTPException(
-                status_code=409,
-                detail="ほかの人の署名と重なりました。もう一度押してください",
-            )
+            raise _Conflict(file_id)
         return document_store.store_signed(file_id, pdf)
 
     def _load(file_id: str, mac: str, *, fresh: bool = False) -> bytes:
@@ -293,7 +324,13 @@ def create_app(
         except InvalidPayload:
             # 偽造 QR。どこが違うかは教えない
             raise HTTPException(status_code=403, detail="この URL は無効です")
+        try:
+            return _current(file_id, fresh=fresh)
+        except DocumentNotFound:
+            raise HTTPException(status_code=404, detail="書類が見つかりません")
 
+    def _current(file_id: str, *, fresh: bool = False) -> bytes:
+        """書類の中身（MAC は確かめない。確かめるのは呼ぶ側の責任）。"""
         remembered = documents.get(file_id)
         if remembered is not None:
             content_hash, pdf = remembered
@@ -305,10 +342,7 @@ def create_app(
                 return pdf  # 手元のものと同じ中身だった
 
         started = time.perf_counter()
-        try:
-            pdf = document_store.fetch(file_id)
-        except DocumentNotFound:
-            raise HTTPException(status_code=404, detail="書類が見つかりません")
+        pdf = document_store.fetch(file_id)
         logger.info("Drive から取得: %s (%.0fms)", file_id, (time.perf_counter() - started) * 1000)
         documents.put(file_id, (_hash(pdf), pdf))
         verified.put(file_id, True)
@@ -329,7 +363,12 @@ def create_app(
         if not _allowed(file_id, email):
             return MODE_STRANGER, None, empty_fields
         mode, role = _mode_for(email, all_fields, empty_fields)
+        if mode in SIGNABLE and _is_pending(file_id, email):
+            return MODE_PENDING, role, empty_fields
         return mode, role, empty_fields
+
+    def _is_pending(file_id: str, email: str) -> bool:
+        return bool(pending.get((file_id, email.strip().lower())))
 
     def _mode_for(email: str, all_fields: list[str], empty_fields: list[str]) -> tuple[str, str | None]:
         """見てよい人について、押せるかどうか。署名ページと一覧で同じ判定を使う。"""
@@ -387,7 +426,7 @@ def create_app(
             except DocumentNotFound:
                 continue  # 一覧を取ったあとに消された・共有を外された
             mode, role = _mode_for(email, all_fields, empty_fields)
-            if mode not in SIGNABLE:
+            if mode not in SIGNABLE or _is_pending(shared.file_id, email):
                 continue
             waiting.append(
                 {
@@ -513,6 +552,123 @@ def create_app(
             },
         )
 
+    def _run_job(job: SignJob) -> SignatureNotice | None:
+        """予約された署名を実際に押して書き戻す。押す必要が無ければ None。
+
+        受け付けた時点から中身が変わっていてもよい（間に誰かが押しただけなら、
+        その版の上に押せばよい）。変わっていてはいけないのは「その人がその欄を押せること」で、
+        それは押す直前にもう一度確かめる。
+
+        ⚠同じ予約が2回来ることがある（Cloud Tasks のやり直し、応答が届かなかった場合など）。
+        もう押してあれば何もしない。二重に押さないことを、ここで保証する。
+        """
+        from PIL import Image
+
+        for _ in range(CONFLICT_RETRIES):
+            marks = [("開始", time.perf_counter())]
+            with _writing(job.file_id):
+                try:
+                    pdf = _current(job.file_id, fresh=True)
+                except DocumentNotFound:
+                    raise JobRejected(404, "書類が見つかりません（削除されたか、共有が外されました）")
+                base_hash = _hash(pdf)
+                marks.append(("書類の用意", time.perf_counter()))
+
+                if not _allowed(job.file_id, job.email):
+                    raise JobRejected(403, "この書類に署名できるアカウントではありません")
+                all_fields = list_signature_fields(io.BytesIO(pdf))
+                empty_fields = list_signature_fields(io.BytesIO(pdf), filled=False)
+                mode, role = _mode_for(job.email, all_fields, empty_fields)
+                if mode not in SIGNABLE:
+                    return None  # もう押してある
+                if (role if mode == MODE_ROLE_READY else None) != job.role:
+                    raise JobRejected(409, "押す欄が変わりました。署名ページを開き直してください")
+
+                signed = io.BytesIO()
+                received = f"{job.requested_at} 受付"
+                if mode == MODE_ROLE_READY:
+                    sign_field(
+                        io.BytesIO(pdf),
+                        signed,
+                        field_name=role,
+                        signer=signer,
+                        tsa_url=tsa_url,
+                        signer_name=job.email,
+                        reason=f"{role}として承認（{received}）",
+                        seal=Image.open(io.BytesIO(job.stamp_png)) if job.stamp_png else None,
+                    )
+                else:
+                    sign_invisible(
+                        io.BytesIO(pdf),
+                        signed,
+                        field_name=silent_field_name(job.email),
+                        signer=signer,
+                        tsa_url=tsa_url,
+                        signer_name=job.email,
+                        reason=f"確認（{received}）",
+                    )
+                signed_pdf = signed.getvalue()
+                marks.append(("署名（TSA込み）", time.perf_counter()))
+
+                try:
+                    _store_if_unchanged(job.file_id, signed_pdf, base_hash)
+                except _Conflict:
+                    # 間に誰かが書き戻した。その版を取り直して押し直す
+                    logger.info("ほかの署名と重なったので押し直す: %s", job.file_id)
+                    continue
+                documents.put(job.file_id, (_hash(signed_pdf), signed_pdf))
+                verified.put(job.file_id, True)
+                marks.append(("書き戻し", time.perf_counter()))
+
+            _log_breakdown("署名", marks)
+            return SignatureNotice.create(
+                file_id=job.file_id, signer_email=job.email, role=job.role, signed_pdf=signed_pdf
+            )
+        raise JobRejected(409, "ほかの人の署名と重なり続けました。もう一度押してください")
+
+    def _process(job: SignJob, *, last_attempt: bool) -> bool:
+        """キューから来た予約を押す。やり直させたいときだけ False を返す。
+
+        押せたら記録のメール、やり直しても押せないと分かったら「押せなかった」メール。
+        ⚠メールは応答を返す前に送る。応答のあとは CPU がほとんど割り当てられない。
+        """
+        key = (job.file_id, job.email.strip().lower())
+        try:
+            notice = _run_job(job)
+        except JobRejected as exc:
+            logger.warning("署名できなかった: %s %s (%s)", job.file_id, job.email, exc.detail)
+            pending.forget(key)
+            notify_quietly(
+                notifier,
+                SignatureNotice.failed(
+                    file_id=job.file_id, signer_email=job.email, role=job.role, reason=exc.detail
+                ),
+            )
+            return True
+        except Exception:
+            logger.exception("署名の途中で失敗: %s %s", job.file_id, job.email)
+            if not last_attempt:
+                return False
+            pending.forget(key)
+            notify_quietly(
+                notifier,
+                SignatureNotice.failed(
+                    file_id=job.file_id,
+                    signer_email=job.email,
+                    role=job.role,
+                    reason="時間をおいて何度か試しましたが、処理中のエラーが続きました",
+                ),
+            )
+            return True
+        pending.forget(key)
+        if notice is not None:
+            notify_quietly(notifier, notice)
+        return True
+
+    if hasattr(sign_queue, "bind"):
+        # プロセス内で回すキュー（開発用）。やり直しはしない
+        sign_queue.bind(lambda job: _process(job, last_attempt=True))
+
     @app.post("/s/{file_id}/sign")
     def do_sign(
         request: Request,
@@ -522,87 +678,87 @@ def create_app(
         csrf: str = Form(""),
         seal_choice: str = Form(""),
         seal_image: UploadFile | None = File(None),
-    ) -> RedirectResponse:
-        # ⚠このエンドポイントを async にしてはいけない。pyHanko の署名は内部で
-        # asyncio.run() を呼ぶので、動いているイベントループの中では例外になる。
-        # 同期関数のままにしておけば FastAPI がスレッドプールで回してくれる
-        marks = [("開始", time.perf_counter())]
-        # 読んで→署名して→書き戻す、のあいだに他の署名を割り込ませない。
-        # 割り込まれると、割り込んだ側の署名を含まない版で上書きしてしまう
-        with _writing(file_id):
-            pdf = _load(file_id, m, fresh=True)
-            # 署名の土台にした中身そのもののハッシュ。書き戻す直前に突き合わせる
-            base_hash = _hash(pdf)
-            marks.append(("書類の用意", time.perf_counter()))
+    ):
+        """押したのを受け付ける。キューがあれば予約を積んで、すぐに返す。
 
-            email = identity_provider.verified_email(request)
-            if not email:
-                raise HTTPException(status_code=401, detail="ログインが必要です")
-            if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
-                raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
+        ここで確かめるのは本人・CSRF・押してよい欄かまで。判定には手元の写しを使う
+        （押す直前に最新でもう一度確かめるので、ここで落とし直す必要はない）。
+        """
+        # ⚠このエンドポイントを async にしてはいけない。キューが無いときはここで
+        # pyHanko が署名し、pyHanko は内部で asyncio.run() を呼ぶ
+        pdf = _load(file_id, m)
 
-            mode, role, _ = _situation(pdf, email, file_id)
-            if mode == MODE_STRANGER:
-                raise HTTPException(
-                    status_code=403, detail="この書類に署名できるアカウントではありません"
-                )
-            if mode not in SIGNABLE:
-                raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
+        email = identity_provider.verified_email(request)
+        if not email:
+            raise HTTPException(status_code=401, detail="ログインが必要です")
+        if not hmac.compare_digest(_csrf_token(qr_secret, file_id, email), csrf):
+            raise HTTPException(status_code=403, detail="フォームの有効期限が切れています")
 
-            uploaded = seal_image.file.read() if seal_image is not None else None
-            if uploaded:
-                try:
-                    prepare_uploaded(uploaded)  # 押す前に検疫を通す
-                except UnusableImage as exc:
-                    raise HTTPException(status_code=400, detail=str(exc))
+        mode, role, _ = _situation(pdf, email, file_id)
+        if mode == MODE_STRANGER:
+            raise HTTPException(status_code=403, detail="この書類に署名できるアカウントではありません")
+        if mode == MODE_PENDING:
+            raise HTTPException(status_code=409, detail="受け付け済みです。書類への反映をお待ちください")
+        if mode not in SIGNABLE:
+            raise HTTPException(status_code=409, detail="この書類にはもう署名しています")
 
-            signed = io.BytesIO()
-            if mode == MODE_ROLE_READY:
-                sign_field(
-                    io.BytesIO(pdf),
-                    signed,
-                    field_name=role,
-                    signer=signer,
-                    tsa_url=tsa_url,
-                    signer_name=email,
-                    reason=f"{role}として承認",
-                    seal=_stamp_for(request, email, uploaded, seal_choice),
-                )
-            else:
-                sign_invisible(
-                    io.BytesIO(pdf),
-                    signed,
-                    field_name=silent_field_name(email),
-                    signer=signer,
-                    tsa_url=tsa_url,
-                    signer_name=email,
-                    reason="確認",
-                )
-            signed_pdf = signed.getvalue()
-            marks.append(("署名（TSA込み）", time.perf_counter()))
+        uploaded = seal_image.file.read() if seal_image is not None else None
+        if uploaded:
+            try:
+                prepare_uploaded(uploaded)  # 押す前に検疫を通す
+            except UnusableImage as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
-            _store_if_unchanged(file_id, signed_pdf, base_hash)
-            documents.put(file_id, (_hash(signed_pdf), signed_pdf))
-            verified.put(file_id, True)
-            marks.append(("書き戻し", time.perf_counter()))
+        # 印影は押した人のログイン中にしか作れない（アイコン・アップロード画像）ので、ここで絵にして持たせる
+        stamp_png = None
+        if mode == MODE_ROLE_READY:
+            buffer = io.BytesIO()
+            _stamp_for(request, email, uploaded, seal_choice).save(buffer, format="PNG")
+            stamp_png = buffer.getvalue()
 
-        _log_breakdown("署名", marks)
-
-        # 署名の記録を本人へ送る。アプリの外（本人の受信箱）に、こちらが消せない
-        # 控えを残すのが目的。送れなくても署名は成立しているので、握りつぶして進む。
-        # ⚠画面を返したあとに送る。応答を待つあいだ、押した人を待たせない
-        background.add_task(
-            notify_quietly,
-            notifier,
-            SignatureNotice.create(
-                file_id=file_id,
-                signer_email=email,
-                role=role if mode == MODE_ROLE_READY else None,
-                signed_pdf=signed_pdf,
-            ),
+        job = SignJob(
+            file_id=file_id,
+            email=email,
+            role=role if mode == MODE_ROLE_READY else None,
+            stamp_png=stamp_png,
+            requested_at=datetime.now(JST).isoformat(timespec="seconds"),
         )
+        key = (file_id, email.strip().lower())
+        if sign_queue is None:
+            try:
+                notice = _run_job(job)
+            except JobRejected as exc:
+                raise HTTPException(status_code=exc.status, detail=exc.detail)
+            # 画面を返したあとに送る。応答を待つあいだ、押した人を待たせない
+            if notice is not None:
+                background.add_task(notify_quietly, notifier, notice)
+        else:
+            pending.put(key, True)
+            try:
+                sign_queue.enqueue(job)
+            except Exception:
+                pending.forget(key)
+                logger.exception("署名の予約を積めなかった: %s", file_id)
+                raise HTTPException(status_code=503, detail="受け付けられませんでした。もう一度押してください")
 
+        # 一覧からまとめて押すときは、画面を組み立てて返す必要が無い
+        if request.headers.get("x-requested-with") == "inbox":
+            return JSONResponse({"status": "accepted"}, status_code=202)
         return _back_to_sign_page(file_id, m)
+
+    @app.post(TASK_PATH)
+    def run_task(request: Request, payload: dict = Body(...)) -> Response:
+        """キュー（Cloud Tasks）から呼び返されて、予約された署名を押す。
+
+        500 を返すと Cloud Tasks が間を置いてやり直す。やり直しても無駄な失敗
+        （共有を外された等）と、やり直しの最後の1回では 200 を返して打ち切り、本人へ知らせる。
+        """
+        if task_auth is None or not task_auth(request):
+            raise HTTPException(status_code=403, detail="forbidden")
+        job = SignJob.from_json(json.dumps(payload).encode("utf-8"))
+        retried = int(request.headers.get("x-cloudtasks-taskretrycount", "0") or 0)
+        done = _process(job, last_attempt=retried + 1 >= MAX_ATTEMPTS)
+        return Response(status_code=200 if done else 500)
 
     @app.post("/s/{file_id}/revoke")
     def do_revoke(
@@ -637,7 +793,12 @@ def create_app(
             except NotRevocable as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
 
-            _store_if_unchanged(file_id, reverted, base_hash)
+            try:
+                _store_if_unchanged(file_id, reverted, base_hash)
+            except _Conflict:
+                raise HTTPException(
+                    status_code=409, detail="ほかの人の署名と重なりました。もう一度押してください"
+                )
             documents.put(file_id, (_hash(reverted), reverted))
             verified.put(file_id, True)
             marks.append(("書き戻し", time.perf_counter()))

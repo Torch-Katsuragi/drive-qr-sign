@@ -56,6 +56,11 @@
       {% elif mode == "silent_done" %}
         <p>この書類は確認済みとして記録されています。</p>
 
+      {% elif mode == "pending" %}
+        {% if role %}<p class="role">{{ role }}</p>{% endif %}
+        <p>署名を受け付けました。書類への反映は数十秒ほどで終わり、控えのメールが届きます。</p>
+        <p class="note">この画面は閉じてかまいません。署名できなかったときは、その旨をメールでお知らせします。</p>
+
       {% else %}
         <p>このアカウントには、この書類を見る権限がありません。Drive の共有設定を確認してください。</p>
       {% endif %}
@@ -140,6 +145,9 @@
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <button type="submit">確認したことを記録する</button>
       </form>
+
+    {% elif mode == "pending" %}
+      <p class="stamp-done">受付済み</p>
 
     {% elif mode in ["role_done", "silent_done"] %}
       {% if mode == "role_done" %}<img class="seal" src="/seal/preview.png" alt="押した印影">{% endif %}

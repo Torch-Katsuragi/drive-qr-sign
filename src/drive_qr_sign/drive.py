@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import io
+import threading
 from pathlib import Path
 
 from .documents import DocumentNotFound, SharedDocument
@@ -57,10 +58,29 @@ def build_default_service():
 
 
 class DriveDocumentStore:
-    """DocumentStore の Drive 実装。"""
+    """DocumentStore の Drive 実装。
 
-    def __init__(self, service):
-        self._service = service
+    ⚠googleapiclient のクライアントは**スレッドをまたいで共有できない**（下の httplib2 が
+    1本の接続を使い回すため）。同時に来た要求どうしで読み取りが混ざり、タイムアウトや
+    「見つからない」になる（実測: 6本同時に落とすと2本がタイムアウト）。
+    だから作り方（factory）を受け取り、スレッドごとに1つずつ持つ。
+    """
+
+    def __init__(self, service=None, *, factory=None):
+        if (service is None) == (factory is None):
+            raise ValueError("service か factory のどちらか一方を渡す")
+        self._fixed = service
+        self._factory = factory
+        self._local = threading.local()
+
+    @property
+    def _service(self):
+        if self._fixed is not None:
+            return self._fixed  # テスト用の偽物。スレッドは気にしない
+        service = getattr(self._local, "service", None)
+        if service is None:
+            service = self._local.service = self._factory()
+        return service
 
     def fetch(self, file_id: str) -> bytes:
         try:
