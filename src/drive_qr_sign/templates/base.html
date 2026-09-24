@@ -229,8 +229,16 @@
   .item.done .state { color: var(--seal); font-weight: 600; }
   .item.done .name { color: var(--muted); }
   .item.failed .state { color: var(--seal); }
-  .item details > .note { margin: 0 0 .5rem 2.25rem; }
-  .item .viewer { margin: 0 calc(-1 * var(--pad)) 1rem; }
+  .item details > .aside { margin: 0 0 1rem; text-align: right; font-size: .8rem; }
+  .item .viewer { margin: 0 calc(-1 * var(--pad)) .5rem; }
+  /* ⚠開いてから PDF が届くまで1〜2秒ある。そのあいだ何も出ないと、
+     リンクを押さないと読めないように見える（実際にそう受け取られた） */
+  .item .viewer:empty::before {
+    content: "書類を読み込んでいます…";
+    display: grid; place-items: center; aspect-ratio: 1 / 1.414;
+    background: #fff; color: #888; font-size: .9rem;
+    border-block: 1px solid var(--line);
+  }
   .batch .action { margin-top: .5rem; }
 
 </style>

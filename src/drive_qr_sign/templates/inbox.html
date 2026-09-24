@@ -62,10 +62,13 @@
               <span class="tag">{% if item.role %}{{ item.role }}欄{% else %}確認の記録{% endif %}</span>
               <span class="state" aria-live="polite"></span>
             </summary>
-            <p class="note"><a href="/s/{{ item.file_id }}?m={{ item.mac }}">この書類の署名ページを開く</a></p>
+            {# 開いた瞬間に読み込みが始まる。届くまでは紙の形の枠と「読み込み中」を出す（CSS） #}
             <div class="viewer"
                  data-src="/s/{{ item.file_id }}/document.pdf?m={{ item.mac }}"
                  data-worker="/static/pdfjs/pdf.worker.min.mjs"></div>
+            <p class="note aside">
+              印影を選んで押したいときは<a href="/s/{{ item.file_id }}?m={{ item.mac }}">この書類の署名ページ</a>から
+            </p>
           </details>
         </li>
       {% endfor %}
